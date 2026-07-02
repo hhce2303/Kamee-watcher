@@ -89,6 +89,40 @@ if (Test-Path $reqFile) {
     if ($code -ne 0) { Write-Error "Fallo la instalacion de requirements.txt."; exit 1 }
 }
 
+# -- 5. Motor nativo Rust (watcher_segments) — OPCIONAL, no fatal ------------
+# Extension PyO3 (.pyd) que acelera el ensamblado de clips (remux/concat TS->MP4).
+# Es OPCIONAL: si falta el toolchain Rust o la compilacion falla, la app usa el
+# fallback FFmpeg (gate ENGINE_READY). Por eso avisamos y continuamos en vez de
+# abortar la preparacion del entorno.
+$crateDir = Join-Path $PSScriptRoot "project\native\watcher_segments"
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    Write-Host "Rust (cargo) no encontrado -> se omite el motor nativo; se usara el fallback FFmpeg." -ForegroundColor Yellow
+    Write-Host "  (Opcional) Instala Rust desde https://rustup.rs para acelerar el ensamblado de clips." -ForegroundColor DarkGray
+} elseif (Test-Path $crateDir) {
+    Write-Host "Compilando el motor nativo Rust (watcher_segments)..." -ForegroundColor Cyan
+    & $venvPython -m pip install --upgrade maturin --quiet
+    if ($LASTEXITCODE -eq 0) {
+        $wheelOut = Join-Path $env:TEMP "tw_wheels"
+        Push-Location $crateDir
+        try {
+            # `maturin build --interpreter` (no `develop`) evita que maturin
+            # autodetecte un venv ajeno (p.ej. un .venv roto en el repo).
+            & $venvPython -m maturin build --release --interpreter $venvPython --out $wheelOut
+            if ($LASTEXITCODE -eq 0) {
+                $wheel = Get-ChildItem $wheelOut -Filter "watcher_segments-*.whl" -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime | Select-Object -Last 1
+                if ($wheel) {
+                    & $venvPython -m pip install --force-reinstall --no-deps $wheel.FullName --quiet
+                    if ($LASTEXITCODE -eq 0) { Write-Host "Motor nativo Rust instalado." -ForegroundColor Green }
+                    else { Write-Host "No se pudo instalar el wheel nativo -> fallback FFmpeg." -ForegroundColor Yellow }
+                }
+            } else {
+                Write-Host "Fallo la compilacion del motor nativo -> fallback FFmpeg." -ForegroundColor Yellow
+            }
+        } finally { Pop-Location }
+    }
+}
+
 Write-Host ""
 Write-Host "Listo. venv preparado para este PC." -ForegroundColor Green
 Write-Host "  Ubicacion: $venvPath" -ForegroundColor Green
