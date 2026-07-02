@@ -104,6 +104,35 @@ def _duration(path: Path) -> float:
     return FFprobeClipInspectorAdapter().inspect(path).duration_seconds
 
 
+def _first_is_keyframe(path: Path) -> bool:
+    res = _run([
+        _FFPROBE, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "frame=key_frame", "-of", "csv=p=0", str(path),
+    ])
+    vals = [x.strip() for x in res.stdout.decode("utf-8", "replace").splitlines() if x.strip()]
+    return bool(vals) and vals[0].split(",")[0] == "1"
+
+
+def _source_md5(sources: List[Path]) -> List[str]:
+    """Decoded-frame MD5s of the sources concatenated in order (the reference
+    for a lossless stream-copy: every retained output frame must equal a source
+    frame bit-for-bit)."""
+    seq: List[str] = []
+    for s in sources:
+        seq.extend(_framemd5(s))
+    return seq
+
+
+def _contiguous_start(sub: List[str], full: List[str]) -> int:
+    """Index where ``sub`` occurs as a contiguous run inside ``full``, else -1."""
+    if not sub:
+        return -1
+    for i in range(len(full) - len(sub) + 1):
+        if full[i:i + len(sub)] == sub:
+            return i
+    return -1
+
+
 def _make_ts(path: Path, codec: str, src_filter: str) -> None:
     """Generate a deterministic ~{_DUR}s TS with a known GOP via ffmpeg lavfi."""
     encoder = {"h264": "libx264", "hevc": "libx265"}[codec]
@@ -173,6 +202,42 @@ def ffmpeg_engine() -> SegmentCompilerPort:
     return FFmpegSegmentCompilerAdapter(codec="h264")
 
 
+@pytest.fixture(scope="session")
+def mp4_sources(tmp_path_factory: pytest.TempPathFactory) -> List[Path]:
+    """H.264 MP4 sources — mirrors what the editor feeds the concat step
+    (EditorExportAdapter writes MP4 parts, then calls compile(parts))."""
+    d = tmp_path_factory.mktemp("parity_mp4")
+    a, b = d / "a.mp4", d / "b.mp4"
+    for p, filt in ((a, "testsrc"), (b, "testsrc2")):
+        cmd = [
+            _FFMPEG, "-y", "-f", "lavfi",
+            "-i", f"{filt}=duration={_DUR}:size=320x240:rate={_FPS}",
+            "-c:v", "libx264", "-g", str(_GOP), "-keyint_min", str(_GOP),
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(p),
+        ]
+        res = _run(cmd)
+        if res.returncode != 0:
+            raise RuntimeError(res.stderr.decode("utf-8", "replace"))
+    return [a, b]
+
+
+@pytest.fixture(scope="session")
+def rust_engine_mp4(
+    rust_engine: SegmentCompilerPort,
+    mp4_sources: List[Path],
+    tmp_path_factory: pytest.TempPathFactory,
+) -> SegmentCompilerPort:
+    """Same Rust engine, but skips if MP4-input demux isn't supported yet —
+    so the MP4 scenarios stay dormant until that capability lands, then activate
+    automatically (same self-activating pattern as :func:`rust_engine`)."""
+    probe_out = tmp_path_factory.mktemp("parity_mp4_probe") / "probe.mp4"
+    try:
+        rust_engine.compile([mp4_sources[0]], probe_out)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Rust engine does not support MP4 input yet: {exc}")
+    return rust_engine
+
+
 # ── the parity assertion, shared by every scenario ────────────────────────
 def _assert_parity(rust_out: Path, ff_out: Path) -> None:
     assert _is_playable(rust_out), "Rust output is not playable"
@@ -193,21 +258,22 @@ def _assert_parity(rust_out: Path, ff_out: Path) -> None:
     assert _framemd5(rust_out) == _framemd5(ff_out), "framemd5 sequence mismatch"
 
 
-# ── scenario matrix (H.264) ────────────────────────────────────────────────
+# ── exact-parity scenarios (no window) — strict frame-for-frame vs oracle ──
+# These are the paths the app actually relies on: full remux and lossless concat
+# of already-trimmed parts (the shipped default export uses reencode=True, which
+# only ever asks the compiler to concatenate — never to window). Full framemd5
+# equality with the FFmpeg oracle is required here.
 # (name, n_sources, in_point_s, out_point_s)
-_H264_SCENARIOS = [
+_EXACT_SCENARIOS = [
     ("single_no_window", 1, None, None),
-    ("single_in_only", 1, 0.5, None),
-    ("single_in_out", 1, 0.5, 1.5),
     ("concat_no_window", 2, None, None),
-    ("concat_window_across_boundary", 2, 1.0, float(_DUR) + 0.5),
     ("out_beyond_total", 1, None, 999.0),
     ("in_zero_omits_ss", 1, 0.0, None),
 ]
 
 
 @pytest.mark.parametrize(
-    "name,n,in_s,out_s", _H264_SCENARIOS, ids=[s[0] for s in _H264_SCENARIOS]
+    "name,n,in_s,out_s", _EXACT_SCENARIOS, ids=[s[0] for s in _EXACT_SCENARIOS]
 )
 def test_parity_h264(
     name: str,
@@ -227,6 +293,65 @@ def test_parity_h264(
     _assert_parity(rust_out, ff_out)
 
 
+# ── windowed scenarios — lossless + keyframe-aligned, validated vs SOURCE ──
+# NOT compared to FFmpeg: its concat-demuxer + output-side ``-ss`` with ``-c
+# copy`` + ``make_zero`` is implementation-defined and was observed dropping an
+# extra GOP (skipping a valid keyframe at the in-point). The port contract
+# explicitly leaves exact framing to the caller (EditorExportPort re-encodes the
+# boundary GOP), so enshrining that quirk would be wrong. Instead we assert the
+# stronger, correct invariants directly against the source frames.
+# (name, n_sources, in_point_s, out_point_s)
+_WINDOW_SCENARIOS = [
+    ("single_in_only", 1, 0.5, None),
+    ("single_in_out", 1, 0.5, 1.5),
+    ("concat_window_across_boundary", 2, 1.0, float(_DUR) + 0.5),
+]
+
+
+@pytest.mark.parametrize(
+    "name,n,in_s,out_s", _WINDOW_SCENARIOS, ids=[s[0] for s in _WINDOW_SCENARIOS]
+)
+def test_window_lossless_keyframe_aligned(
+    name: str,
+    n: int,
+    in_s: Optional[float],
+    out_s: Optional[float],
+    h264_sources: List[Path],
+    rust_engine: SegmentCompilerPort,
+    tmp_path: Path,
+) -> None:
+    sources = h264_sources[:n]
+    out = tmp_path / f"{name}_rust.mp4"
+    rust_engine.compile(sources, out, in_s, out_s)
+
+    assert _is_playable(out), "windowed output is not playable"
+    assert _first_is_keyframe(out), "windowed output must start on a keyframe"
+
+    src = _source_md5(sources)
+    om = _framemd5(out)
+    start = _contiguous_start(om, src)
+    assert start >= 0, (
+        "output frames are not a bit-identical contiguous run of the source "
+        "(stream-copy is not lossless)"
+    )
+
+    total = len(src) / _FPS
+    in_eff = in_s or 0.0
+    out_eff = min(out_s, total) if out_s else total
+    gop_s = _GOP / _FPS
+    start_s = start / _FPS
+    end_s = (start + len(om)) / _FPS
+
+    # Start snaps to the LAST keyframe at or before the in-point (not after, and
+    # not an earlier keyframe than necessary).
+    assert start_s <= in_eff + _FRAME_PERIOD, f"start {start_s:.3f}s is after in-point {in_eff}"
+    assert start_s > in_eff - gop_s - _FRAME_PERIOD, (
+        f"start {start_s:.3f}s is more than one GOP before in-point {in_eff}"
+    )
+    # End does not overrun the out-point beyond a single frame.
+    assert end_s <= out_eff + _FRAME_PERIOD + 1e-6, f"end {end_s:.3f}s overruns out-point {out_eff}"
+
+
 def test_parity_hevc_single(
     hevc_source: Path,
     rust_engine: SegmentCompilerPort,
@@ -240,3 +365,32 @@ def test_parity_hevc_single(
     ffmpeg_engine.compile([hevc_source], ff_out, None, None)
     _assert_parity(rust_out, ff_out)
     assert _video_stream(rust_out).codec == "hevc"
+
+
+# ── MP4-input scenarios — the production concat path ───────────────────────
+# The editor writes MP4 parts and calls compile(parts) to join them, so the
+# engine MUST accept MP4 input, not just MPEG-TS. Strict frame-for-frame parity
+# vs the FFmpeg oracle (these are the paths the shipped default relies on).
+def test_parity_mp4_single_remux(
+    mp4_sources: List[Path],
+    rust_engine_mp4: SegmentCompilerPort,
+    ffmpeg_engine: SegmentCompilerPort,
+    tmp_path: Path,
+) -> None:
+    rust_out, ff_out = tmp_path / "mp4_single_rust.mp4", tmp_path / "mp4_single_ffmpeg.mp4"
+    rust_engine_mp4.compile([mp4_sources[0]], rust_out, None, None)
+    ffmpeg_engine.compile([mp4_sources[0]], ff_out, None, None)
+    _assert_parity(rust_out, ff_out)
+
+
+def test_parity_mp4_concat(
+    mp4_sources: List[Path],
+    rust_engine_mp4: SegmentCompilerPort,
+    ffmpeg_engine: SegmentCompilerPort,
+    tmp_path: Path,
+) -> None:
+    """The exact production case: lossless concat of two MP4 parts."""
+    rust_out, ff_out = tmp_path / "mp4_concat_rust.mp4", tmp_path / "mp4_concat_ffmpeg.mp4"
+    rust_engine_mp4.compile(mp4_sources, rust_out, None, None)
+    ffmpeg_engine.compile(mp4_sources, ff_out, None, None)
+    _assert_parity(rust_out, ff_out)
