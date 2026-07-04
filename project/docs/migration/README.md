@@ -3,9 +3,13 @@
 Documentación completa de la transición de la UI de The Watcher desde **PySide6/QML** a
 **Tauri 2.0 + React**, con el core Python como sidecar ahora y destino **hexágono Rust** vía PyO3.
 
-> **Estado:** roadmap aprobado (2026-06-30), **no implementado todavía**. El código sigue siendo
-> 100% QML. La implementación está **condicionada al GO del gate F0** (ver
-> [how-to F0](howto-f0-gate.md)). Origen: revisión `/office-hours` → `/plan-eng-review`.
+> **Estado (2026-07-04):** **F0 GO** · **F1 cerrada** (backend headless implementado en la rama
+> `feat/f1-backend-headless`: `core/api` Facade+DTOs+bus, `adapters/ipc` named pipe autenticado,
+> arranque por rol daemon/sidecar; los 3 bridges QML delegan a las facades sin regresión; suite
+> 428 passed). QML sigue siendo la UI activa (se elimina en F3). El sign-off de F1 en máquina real
+> (arranque QML por rol + build congelado) es **riesgo aceptado por el owner**. **Siguiente: F2**
+> (UI React a paridad). Detalle del gate F1 en [Referencia — Arquitectura objetivo](reference-target-architecture.md#verificación-por-fase).
+> Origen: revisión `/office-hours` → `/plan-eng-review`.
 
 ## Índice (Diataxis)
 

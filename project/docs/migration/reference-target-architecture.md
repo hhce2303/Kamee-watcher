@@ -94,13 +94,13 @@ Orden = prioridad de migración a Rust. Binding = **PyO3 in-process** durante la
 
 ## Fases (orden estricto)
 
-| Fase | Qué | Estimación |
-|------|-----|-----------|
-| **F0** | Gate GO/NO-GO **bloqueante**: 6 spikes en máquina real (ver [how-to F0](howto-f0-gate.md)) | ~1-2 sem / CC ~2-4 d |
-| **F1** | Backend headless: `core/api` (Facade+DTOs+bus), `adapters/ipc`, arranque por rol; QML sigue vivo | ~1-2 sem |
+| Fase | Qué | Estado |
+|------|-----|--------|
+| **F0** | Gate GO/NO-GO **bloqueante**: 6 spikes en máquina real (ver [how-to F0](howto-f0-gate.md)) | ✅ GO (2026-07-02) |
+| **F1** | Backend headless: `core/api` (Facade+DTOs+bus), `adapters/ipc`, arranque por rol; QML sigue vivo | ✅ **cerrada** (2026-07-04, `feat/f1-backend-headless`) |
 | **F2** | UI React a paridad, vista por vista (editor al final); F2a-d + buffer | ~8-13 sem |
 | **F3** | Cutover: rollout por cohorte, empaquetado Tauri, **eliminación total de QML+PySide6** | ~2-3 sem |
-| **Track R** | Hexágono Rust port-por-port vía PyO3 (post-cutover) | incremental |
+| **Track R** | Hexágono Rust port-por-port vía PyO3 (post-cutover) | 1er port live (`ENGINE_READY=true`) |
 
 ## Archivos afectados
 
@@ -125,7 +125,13 @@ semilla de Track R: `project/native/watcher_segments/` (hoy scaffold, `ENGINE_RE
 ## Verificación (por fase)
 - Ejecuta pruebas visuales y build con [`run.ps1`](../../run.ps1) / [`installer/build.ps1`](../../installer/build.ps1) (reutilizados y evolucionados — no scripts paralelos).
 - F0: ver criterios numéricos en el [how-to F0](howto-f0-gate.md).
-- F1: `pytest` sigue verde; el canal IPC responde el contrato; QML aún levanta contra los mismos servicios.
+- **F1 (✅ cerrada 2026-07-04, rama `feat/f1-backend-headless`):**
+  - ✅ `pytest` verde — 428 passed, 10 skipped (los skips son la paridad Rust).
+  - ✅ El canal IPC responde el contrato — round-trip sobre named pipe real + eventos streamed + rechazo de comando desconocido (`tests/test_ipc_*`), y smoke en vivo de `--sidecar` (bindea `\\.\pipe\TheWatcher.<user>`, shutdown por stdin, exit 0).
+  - ✅ Auditoría (ADR-0011): `start/stop/unlock/setRole` en la ruta QML (event store como `AuditPort`) y en la ruta IPC (`origin="ipc"`).
+  - ✅ Seguridad (ADR-0011): SDDL scoped al usuario, sin puerto TCP.
+  - ➖ **Sign-off en máquina real (riesgo aceptado por el owner, 2026-07-04):** (1) arranque interactivo de la UI QML por rol y (2) build congelado `installer/build.ps1` con pywin32 — no ejecutados en CI; se validan en el despliegue.
+  - Entregado: `core/api/` (EventBus thread-safe, DTOs Pydantic, facades Recording/Settings/Editor/Clips/Requests/Delivery, bootstrap), `adapters/ipc/` (named pipe + SDDL + router + audit), `adapters/filesystem/file_browser_adapter.py`, `runtime/` (mode + headless daemon/sidecar + build_recording_backend). Los 3 bridges QML delegan a las facades (coexistencia dual-path); `main.py` cablea un `ApiLayer` compartido y despacha `--daemon`/`--sidecar`.
 - F3 (aceptación): matar la ventana → grabación de Operador **continúa**; cerrar app IT/Supervisor → **sin** proceso huérfano; export de reel frame-exact idéntico al QML; bundle medido vs 259 MB.
 
 ## Relacionado
