@@ -10,9 +10,10 @@ from loguru import logger
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.adapters.ffmpeg import encoder_selector
+from app.core.api import dto
+from app.core.api.events import EventBus
+from app.core.api.settings_api import SettingsApi
 from app.core.ports.user_config_port import UserConfigPort
-from app.core.policy import policy_for
-from app.core.role import VALID_ROLES, default_autorecord_for_role
 from app.infrastructure import autostart
 from app.infrastructure.config import Settings
 
@@ -65,22 +66,37 @@ class SettingsBridge(QObject):
         user_config_port: UserConfigPort,
         settings: Settings,
         parent: QObject | None = None,
+        *,
+        settings_api: SettingsApi | None = None,
     ) -> None:
         super().__init__(parent)
         self._port = user_config_port
         self._settings = settings
+        self._restart_cb: Optional[Callable[[str, str], None]] = None
+        self._relaunch_cb: Optional[Callable[[], None]] = None
+        self._autorecord_cb: Optional[Callable[[bool], None]] = None
+        # main.py injects the shared facade (with audit + process callbacks wired);
+        # standalone (tests) builds its own over a private bus. The facade owns
+        # persistence, validation, authorization and audit — the bridge only caches
+        # display state and emits Qt signals (coexistence dual-path, ADR-0009).
+        self._api = settings_api or SettingsApi(
+            event_bus=EventBus(),
+            user_config_port=user_config_port,
+            settings=settings,
+            audit_port=None,
+            # Late-bound so main.py can register the callbacks after construction.
+            relaunch_cb=lambda: self._relaunch_cb() if self._relaunch_cb else None,
+            autorecord_cb=lambda enabled: (
+                self._autorecord_cb(enabled) if self._autorecord_cb else None
+            ),
+        )
         cfg = self._port.load()
         self._clips_dir: str = cfg.clips_dir or str(settings.clips_dir)
         self._driver: str = cfg.driver if cfg.driver in _DRIVERS else "auto"
         self._codec: str = (cfg.codec or settings.video_codec or "hevc").lower()
         self._autorecord: bool = cfg.autorecord
-        self._role: str = cfg.role
         self._it_ws_hosts: list = list(cfg.it_ws_hosts)
-        self._it_unlocked: bool = False
         self._restart_state: str = _RESTART_IDLE
-        self._restart_cb: Optional[Callable[[str, str], None]] = None
-        self._relaunch_cb: Optional[Callable[[], None]] = None
-        self._autorecord_cb: Optional[Callable[[bool], None]] = None
         self._it_ws_port_status: str = "unknown"  # unknown | open | closed | opening | error
 
     def set_restart_callback(self, callback: Callable[[str, str], None]) -> None:
@@ -178,11 +194,11 @@ class SettingsBridge(QObject):
 
     @Property(str, notify=roleChanged)
     def role(self) -> str:
-        return self._role
+        return self._api.role
 
     @Property(bool, notify=roleChanged)
     def isITUnlocked(self) -> bool:
-        return self._it_unlocked
+        return self._api.is_it_unlocked
 
     # ── System (persisted / registry) ─────────────────────────────────
 
@@ -200,9 +216,8 @@ class SettingsBridge(QObject):
     def setClipsDir(self, path: str) -> None:
         if path == self._clips_dir:
             return
+        self._api.set_clips_dir(dto.SetClipsDir(path=path))
         self._clips_dir = path
-        Path(path).mkdir(parents=True, exist_ok=True)
-        self._persist(lambda c: setattr(c, "clips_dir", path))
         self.clipsDirChanged.emit()
 
     @Slot(int)
@@ -212,8 +227,9 @@ class SettingsBridge(QObject):
         driver = _DRIVERS[index]
         if driver == self._driver:
             return
+        self._api.set_driver_index(dto.SetDriverIndex(index=index))
         self._driver = driver
-        self._persist(lambda c: setattr(c, "driver", driver))
+        # Encoder-selector cache is a live recording concern owned by the adapter.
         encoder_selector.set_preferences(driver=driver)
         logger.info("Encoder driver set to '{}' (live recording applies on restart).", driver)
         self.encoderChanged.emit()
@@ -223,8 +239,8 @@ class SettingsBridge(QObject):
         codec = (codec or "").lower()
         if codec not in ("h264", "hevc") or codec == self._codec:
             return
+        self._api.set_codec(dto.SetCodec(codec=codec))
         self._codec = codec
-        self._persist(lambda c: setattr(c, "codec", codec))
         logger.info("Codec set to '{}' (applies to new recordings/clips).", codec)
         self.encoderChanged.emit()
 
@@ -263,11 +279,9 @@ class SettingsBridge(QObject):
         if enabled == self._autorecord:
             return
         self._autorecord = enabled
-        self._persist(lambda c: setattr(c, "autorecord", enabled))
+        # Facade persists + invokes the live autorecord callback (start/stop).
+        self._api.set_autorecord(dto.SetAutorecord(enabled=enabled))
         self.systemChanged.emit()
-        # Apply live (IT): start/stop the already-built recording stack.
-        if self._autorecord_cb is not None:
-            self._autorecord_cb(enabled)
 
     # ── Role slots ────────────────────────────────────────────────────
 
@@ -275,58 +289,26 @@ class SettingsBridge(QObject):
     def setRole(self, role: str) -> None:
         """Persist a role change and relaunch to apply it.
 
-        Allowed when:
-        - role == "" (first-run wizard — no existing role set)
-        - current role == IT
-        - isITUnlocked (PIN was verified this session)
-
-        Persists both the role and the role's default ``autorecord`` (operator
-        on, IT/supervisor off) in one write, then asks main() to relaunch the
-        process so the backend re-wires for the new role.
+        Delegates authorization (policy + IT unlock), persistence, audit
+        (ADR-0011) and the relaunch request to :class:`SettingsApi`.  The bridge
+        only refreshes its Qt-facing caches and emits signals if it succeeded.
         """
-        role = (role or "").lower()
-        if role not in VALID_ROLES:
-            logger.warning("setRole: invalid role '{}' — ignored.", role)
+        prev_role = self._api.role
+        applied = self._api.set_role(dto.SetRole(role=(role or "").lower()))
+        if not applied or self._api.role == prev_role:
             return
-        # Authorisation gate = the IT PIN, not the OS user. A role can change
-        # itself only if its policy allows it (IT and the first-run "" state),
-        # otherwise an IT PIN unlock (Ctrl+Alt+Shift+R) is required this session.
-        # NOTE: the PIN is the SOLE gate — anyone holding it can unlock on any
-        # machine. Tightening (per-machine PIN, audit) is tracked in TODOS.md.
-        if not policy_for(self._role).can_change_role and not self._it_unlocked:
-            logger.warning("setRole: not authorised (role={}, unlocked={}).", self._role, self._it_unlocked)
-            return
-        if role == self._role:
-            return
-        self._role = role
-        autorecord = default_autorecord_for_role(role)
-        self._autorecord = autorecord
-
-        def _mutate(c) -> None:
-            c.role = role
-            c.autorecord = autorecord
-
-        self._persist(_mutate)
-        logger.info("Role set to '{}' (autorecord default={}).", role, autorecord)
+        # Facade already persisted the role's default autorecord; refresh cache.
+        self._autorecord = self._port.load().autorecord
         self.roleChanged.emit()
         self.systemChanged.emit()  # autorecord property may have changed
 
-        # Re-wire the backend by relaunching with the new role.
-        if self._relaunch_cb is not None:
-            self._relaunch_cb()
-        else:
-            logger.warning("setRole: no relaunch callback registered — backend not re-wired.")
-
     @Slot(str, result=bool)
     def unlockIT(self, pin: str) -> bool:
-        """Validate the IT PIN. Returns True and sets isITUnlocked on match."""
-        correct = pin == self._settings.it_pin
-        if correct and not self._it_unlocked:
-            self._it_unlocked = True
-            logger.info("IT access unlocked for this session.")
+        """Validate the IT PIN via the facade (audited). Emits roleChanged on unlock."""
+        was_unlocked = self._api.is_it_unlocked
+        correct = self._api.unlock_it(dto.UnlockIT(pin=pin))
+        if correct and not was_unlocked:
             self.roleChanged.emit()
-        elif not correct:
-            logger.warning("unlockIT: wrong PIN attempt.")
         return correct
 
     # ── IT WS hosts (Supervisor config) ──────────────────────────────
@@ -357,9 +339,8 @@ class SettingsBridge(QObject):
     @Slot()
     def lockIT(self) -> None:
         """Re-lock IT access for this session."""
-        if self._it_unlocked:
-            self._it_unlocked = False
-            logger.info("IT access locked.")
+        if self._api.is_it_unlocked:
+            self._api.lock_it()
             self.roleChanged.emit()
 
     # ── IT WS port / firewall ─────────────────────────────────────────

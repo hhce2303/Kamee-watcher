@@ -8,11 +8,22 @@ timeline mutations publish ``TimelineChanged``.  No Qt.
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from loguru import logger
+
+
+@dataclass
+class AddFilesReport:
+    """Outcome of :meth:`EditorApi.add_files_from_urls` — enough for a UI notice."""
+
+    first_index: int = -1
+    requested: int = 0
+    added: int = 0
+    skipped: list[str] = field(default_factory=list)
 
 from app.core.api import dto
 from app.core.api.events import EventBus
@@ -47,6 +58,10 @@ class EditorApi:
         return self._timeline
 
     @property
+    def export_port(self) -> Optional[EditorExportPort]:
+        return self._export_port
+
+    @property
     def exporting(self) -> bool:
         return self._exporting
 
@@ -69,28 +84,31 @@ class EditorApi:
         )
         self._bus.publish(dto.TimelineChanged())
 
-    def add_files_from_urls(self, cmd: dto.AddFilesFromUrls) -> int:
+    def add_files_from_urls(self, cmd: dto.AddFilesFromUrls) -> AddFilesReport:
         """Probe each file's duration and append it; skip un-probeable files.
 
-        Returns the index of the first clip added, or -1 if nothing was added.
+        Returns an :class:`AddFilesReport` (first index, counts, skipped names) so
+        an input adapter can surface an honest "N of M loaded" notice.
         """
-        first = -1
-        added = 0
-        for raw in cmd.urls or []:
+        raws = list(cmd.urls or [])
+        report = AddFilesReport(requested=len(raws))
+        for raw in raws:
             path = self._to_local_path(raw)
             if path is None:
+                report.skipped.append(str(raw))
                 continue
             dur = self._probe_duration(path)
             if dur <= 0:
                 logger.warning("[editor-api] skipping un-probeable file: {}", path)
+                report.skipped.append(path.name)
                 continue
             idx = self._timeline.add(ClipEntry(path, dur))
-            added += 1
-            if first < 0:
-                first = idx
-        if added:
+            report.added += 1
+            if report.first_index < 0:
+                report.first_index = idx
+        if report.added:
             self._bus.publish(dto.TimelineChanged())
-        return first
+        return report
 
     def remove_clip(self, index: int) -> None:
         try:

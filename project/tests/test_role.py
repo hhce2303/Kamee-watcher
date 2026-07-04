@@ -164,135 +164,104 @@ class TestRecordingGates:
 # ── SettingsBridge PIN ────────────────────────────────────────────────────────
 
 class TestSettingsBridgePin:
-    """SettingsBridge.unlockIT validates against settings.it_pin."""
+    """SettingsBridge.unlockIT / setRole — delegates to SettingsApi (F1/ADR-0009).
 
-    def _make_bridge(self, it_pin="4321"):
-        from unittest.mock import MagicMock
-        from app.infrastructure.config import Settings
+    The role-change/unlock LOGIC now lives in SettingsApi (see
+    test_facade_settings.py). These tests verify the bridge's observable Qt
+    surface: the ``role``/``isITUnlocked`` properties, the ``unlockIT`` return
+    value, and that the injected relaunch/autorecord callbacks fire.
+    """
 
-        # Build a minimal Settings-like object without loading .env
-        settings = MagicMock(spec=Settings)
-        settings.it_pin = it_pin
-        settings.clips_dir = "/tmp/clips"
-        settings.video_codec = "h264"
-        settings.capture_framerate = 30
-        settings.output_width = 1920
-        settings.output_height = 1080
-        settings.segment_duration = 300
-        settings.retention_hours = 8
-        settings.event_pre_seconds = 120
-        settings.event_post_seconds = 120
-        settings.event_cooldown_seconds = 30
-
-        port = MagicMock()
+    def _make_bridge(self, role="operator", it_pin="4321"):
+        from types import SimpleNamespace
         from app.core.ports.user_config_port import UserConfig
-        port.load.return_value = UserConfig(role="operator")
-
         from app.adapters.ui.settings_bridge import SettingsBridge
-        bridge = SettingsBridge.__new__(SettingsBridge)
-        bridge._port = port
-        bridge._settings = settings
-        bridge._clips_dir = "/tmp/clips"
-        bridge._driver = "auto"
-        bridge._codec = "h264"
-        bridge._autorecord = True
-        bridge._role = "operator"
-        bridge._it_unlocked = False
-        bridge._restart_state = "idle"
-        bridge._restart_cb = None
-        bridge._relaunch_cb = None
-        bridge._autorecord_cb = None
-        return bridge
 
-    def test_correct_pin_unlocks(self):
+        settings = SimpleNamespace(
+            it_pin=it_pin,
+            clips_dir="/tmp/clips",
+            video_codec="h264",
+            capture_framerate=30,
+            output_width=1920,
+            output_height=1080,
+            segment_duration=300,
+            retention_hours=8,
+            event_pre_seconds=120,
+            event_post_seconds=120,
+            event_cooldown_seconds=30,
+            slc_storage_host=r"\\NAS",
+            it_ws_port=8765,
+        )
+        # A real, mutable UserConfig so the facade's load→mutate→save round-trips.
+        cfg = UserConfig(role=role)
+
+        class _Port:
+            def load(self_inner):
+                return cfg
+
+            def save(self_inner, c):
+                nonlocal cfg
+                cfg = c
+
+        return SettingsBridge(_Port(), settings)
+
+    def test_correct_pin_unlocks(self, qt_app):
         bridge = self._make_bridge(it_pin="4321")
-        with patch.object(bridge, "roleChanged"):
-            result = bridge.unlockIT("4321")
-        assert result is True
-        assert bridge._it_unlocked is True
+        assert bridge.unlockIT("4321") is True
+        assert bridge.isITUnlocked is True
 
-    def test_wrong_pin_does_not_unlock(self):
+    def test_wrong_pin_does_not_unlock(self, qt_app):
         bridge = self._make_bridge(it_pin="4321")
-        result = bridge.unlockIT("0000")
-        assert result is False
-        assert bridge._it_unlocked is False
+        assert bridge.unlockIT("0000") is False
+        assert bridge.isITUnlocked is False
 
-    def test_set_role_blocked_without_unlock(self):
-        bridge = self._make_bridge()
-        bridge._role = "operator"
-        bridge._it_unlocked = False
-        with patch.object(bridge, "roleChanged"):
-            bridge.setRole("it")
-        assert bridge._role == "operator"   # unchanged
+    def test_set_role_blocked_without_unlock(self, qt_app):
+        bridge = self._make_bridge(role="operator")
+        bridge.setRole("it")
+        assert bridge.role == "operator"   # unchanged — operator cannot self-change
 
-    def test_set_role_allowed_when_unlocked(self):
-        bridge = self._make_bridge()
-        bridge._role = "operator"
-        bridge._it_unlocked = True
-        with patch.object(bridge, "roleChanged"), \
-             patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setRole("it")
-        assert bridge._role == "it"
+    def test_set_role_allowed_when_unlocked(self, qt_app):
+        bridge = self._make_bridge(role="operator", it_pin="4321")
+        assert bridge.unlockIT("4321") is True
+        bridge.setRole("it")
+        assert bridge.role == "it"
 
-    def test_set_role_allowed_for_first_run(self):
-        bridge = self._make_bridge()
-        bridge._role = ""
-        bridge._it_unlocked = False
-        with patch.object(bridge, "roleChanged"), \
-             patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setRole("supervisor")
-        assert bridge._role == "supervisor"
+    def test_set_role_allowed_for_first_run(self, qt_app):
+        bridge = self._make_bridge(role="")
+        bridge.setRole("supervisor")
+        assert bridge.role == "supervisor"
 
-    def test_set_role_rejects_invalid(self):
-        bridge = self._make_bridge()
-        bridge._role = "it"
-        with patch.object(bridge, "roleChanged"), \
-             patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setRole("admin")
-        assert bridge._role == "it"
+    def test_set_role_rejects_invalid(self, qt_app):
+        bridge = self._make_bridge(role="it")
+        bridge.setRole("admin")
+        assert bridge.role == "it"
 
-    def test_set_role_initializes_autorecord_default(self):
+    def test_set_role_initializes_autorecord_default(self, qt_app):
         # First-run IT → autorecord off (opt-in); first-run operator → on.
         for role, expected in (("it", False), ("operator", True), ("supervisor", False)):
-            bridge = self._make_bridge()
-            bridge._role = ""
-            bridge._autorecord = True
-            with patch.object(bridge, "roleChanged"), \
-                 patch.object(bridge, "systemChanged"), \
-                 patch.object(bridge, "_persist"):
-                bridge.setRole(role)
-            assert bridge._role == role
-            assert bridge._autorecord is expected
+            bridge = self._make_bridge(role="")
+            bridge.setRole(role)
+            assert bridge.role == role
+            assert bridge.autorecord is expected
 
-    def test_set_role_triggers_relaunch(self):
-        bridge = self._make_bridge()
-        bridge._role = ""
-        bridge._relaunch_cb = MagicMock()
-        with patch.object(bridge, "roleChanged"), \
-             patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setRole("operator")
-        bridge._relaunch_cb.assert_called_once_with()
+    def test_set_role_triggers_relaunch(self, qt_app):
+        bridge = self._make_bridge(role="")
+        relaunch = MagicMock()
+        bridge.set_relaunch_callback(relaunch)
+        bridge.setRole("operator")
+        relaunch.assert_called_once_with()
 
-    def test_set_role_no_relaunch_when_unchanged(self):
-        bridge = self._make_bridge()
-        bridge._role = "operator"
-        bridge._relaunch_cb = MagicMock()
-        with patch.object(bridge, "roleChanged"), \
-             patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setRole("operator")
-        bridge._relaunch_cb.assert_not_called()
+    def test_set_role_no_relaunch_when_unchanged(self, qt_app):
+        bridge = self._make_bridge(role="operator")
+        relaunch = MagicMock()
+        bridge.set_relaunch_callback(relaunch)
+        bridge.setRole("operator")
+        relaunch.assert_not_called()
 
-    def test_set_autorecord_invokes_callback(self):
-        bridge = self._make_bridge()
-        bridge._autorecord = False
-        bridge._autorecord_cb = MagicMock()
-        with patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setAutorecord(True)
-        assert bridge._autorecord is True
-        bridge._autorecord_cb.assert_called_once_with(True)
+    def test_set_autorecord_invokes_callback(self, qt_app):
+        bridge = self._make_bridge(role="it")  # UserConfig default autorecord=True
+        cb = MagicMock()
+        bridge.set_autorecord_callback(cb)
+        bridge.setAutorecord(False)  # toggle off → live stop callback fires
+        assert bridge.autorecord is False
+        cb.assert_called_once_with(False)
