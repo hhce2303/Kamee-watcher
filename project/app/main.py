@@ -77,6 +77,8 @@ from app.adapters.native import make_segment_compiler
 from app.adapters.storage.sqlite_event_store import SqliteEventStoreAdapter
 from app.adapters.filesystem.file_browser_adapter import WindowsFileBrowserAdapter
 from app.core.api.bootstrap import build_api_layer
+from app.runtime.backend import build_recording_backend
+from app.runtime.mode import DAEMON, SIDECAR, resolve_mode
 from app.core.analytics.manual_event import analytic_event_from_context
 from app.core.analytics.sidecar import write_sidecar
 from app.adapters.filesystem.storage_adapter import FilesystemStorageAdapter
@@ -90,61 +92,6 @@ from app.core.disk_monitor import DiskSpaceMonitor
 from app.core.monitor_detection.service import MonitorDetectionService
 from app.core.recording_health.service import RecordingHealthService
 # LivePreviewService removed — preview is now embedded in the recorder FFmpeg process
-
-
-def _build_worker(
-    monitor: MonitorInfo,
-    storage: FilesystemStorageAdapter,
-    settings,
-    builder: HourlyRecordingBuilder,
-    preview_path: "Path | None" = None,
-) -> MonitorWorker:
-    """Factory: create a fully-wired MonitorWorker for one physical monitor."""
-    segment_dir = settings.segment_dir / f"m{monitor.index}"
-
-    def _on_segment_finalized(segment: Segment, _m=monitor) -> None:
-        builder.on_segment_finalized(segment, _m.index)
-
-    buffer = BufferManager(
-        storage=storage,
-        retention_count=max(1, (settings.retention_hours * 3600) // settings.segment_duration),
-        on_segment_finalized=_on_segment_finalized,
-    )
-
-    supervisor = RecorderSupervisor(
-        recorder=None,  # type: ignore[arg-type]
-        storage=storage,
-        segment_dir=segment_dir,
-        max_restarts=settings.max_recorder_restarts,
-    )
-
-    recorder = FFmpegRecorderAdapter(
-        segment_duration=settings.segment_duration,
-        framerate=settings.capture_framerate,
-        crf=settings.crf,
-        width=settings.output_width,
-        height=settings.output_height,
-        capture_source=settings.capture_source,
-        codec=settings.video_codec,
-        on_segment_ready=buffer.register_segment,
-        on_crash=supervisor.notify_crash,
-        # Embedded preview: same FFmpeg process writes a JPEG at 2fps alongside
-        # the recording. No separate screen-capture process = no screen flickering.
-        preview_path=preview_path,
-        preview_fps=2,
-        preview_width=1280,
-    )
-    recorder.set_monitor(monitor)
-    supervisor._recorder = recorder  # noqa: SLF001
-
-    return MonitorWorker(
-        monitor=monitor,
-        recorder=recorder,
-        buffer_manager=buffer,
-        storage=storage,
-        segment_dir=segment_dir,
-        supervisor=supervisor,
-    )
 
 
 def _register_ffmpeg_cleanup() -> None:
@@ -347,106 +294,27 @@ def main() -> None:
                 clips_dir, raw_clips_dir, settings.segment_dir)
 
     # ── Recording stack (skipped for Supervisor role) ────────────────
-    # Supervisor PCs only play back clips; they never capture screens.
-    combined_builder: Optional[CombinedClipBuilder] = None
-    per_monitor_builders: dict[int, HourlyRecordingBuilder] = {}
-    workers: List[MonitorWorker] = []
-    preview_paths: dict[int, Path] = {}
-    recording_service: Optional[RecordingService] = None
-    clip_builder: Optional[ClipBuilder] = None
-    event_service: Optional[EventService] = None
-    disk_monitor: Optional[DiskSpaceMonitor] = None
-    health_service: Optional[RecordingHealthService] = None
-    event_store: Optional[SqliteEventStoreAdapter] = None
-
-    if is_recording_role(user_config.role):
-        combined_builder = CombinedClipBuilder(
-            raw_dir=raw_clips_dir,
-            output_dir=clips_dir,
-            monitor_count=len(all_monitors),
-            timestamp_adapter=FFmpegTimestampAdapter(codec=settings.video_codec),
-            codec=settings.video_codec,
-            cell_width=settings.combined_cell_width,
-            cell_height=settings.combined_cell_height,
-            quality=settings.combined_quality,
-        )
-
-        def _make_builder(monitor: MonitorInfo) -> HourlyRecordingBuilder:
-            b = HourlyRecordingBuilder(
-                output_dir=raw_clips_dir,
-                monitor_count=1,
-                monitor_index=monitor.index,
-                window_minutes=settings.clip_window_minutes,
-                max_size_mb=settings.clip_max_size_mb,
-                on_clip_ready=combined_builder.on_clip_ready,
-                codec=settings.video_codec,
-            )
-            per_monitor_builders[monitor.index] = b
-            return b
-
-        for m in all_monitors:
-            preview_path = settings.segment_dir / f"m{m.index}" / "preview.jpg"
-            preview_paths[m.index] = preview_path
-            workers.append(_build_worker(m, storage, settings, _make_builder(m), preview_path))
-        for w in workers:
-            w.segment_dir.mkdir(parents=True, exist_ok=True)
-
-        recording_service = RecordingService(workers=workers)
-
-        saved_fps = set(user_config.selected_monitor_fingerprints)
-        initial_selection = [m for m in all_monitors if m.fingerprint in saved_fps]
-        if not initial_selection:
-            initial_selection = [
-                next((m for m in all_monitors if m.is_primary), all_monitors[0])
-            ]
-        recording_service.change_monitors(initial_selection)
-
-        clip_adapter = FFmpegTrimAdapter(codec=settings.video_codec)
-        clip_builder = ClipBuilder(
-            recording_service=recording_service,
-            clip_adapter=clip_adapter,
-            clips_dir=clips_dir,
-            pre_seconds=settings.event_pre_seconds,
-            post_seconds=settings.event_post_seconds,
-            timestamp_adapter=FFmpegTimestampAdapter(codec=settings.video_codec),
-        )
-
-        # ── Event persistence (Fase 1) — manual events become queryable
-        # AnalyticEvents + a per-clip sidecar so the editor can paint markers.
-        event_store = SqliteEventStoreAdapter(settings.segment_dir.parent / "events.db")
-
-        def _persist_manual_event(ctx, output_path) -> None:
-            ev = analytic_event_from_context(ctx, output_path)
-            event_store.add(ev)
-            try:
-                write_sidecar(output_path, [ev])
-            except OSError:
-                logger.warning("Could not write event sidecar for {}", output_path)
-
-        event_service = EventService(
-            clip_builder=clip_builder,
-            post_seconds=settings.event_post_seconds,
-            cooldown_seconds=settings.event_cooldown_seconds,
-            retry_delay_seconds=settings.clip_retry_delay_seconds,
-            on_clip_built=_persist_manual_event,
-        )
-
-        disk_monitor = DiskSpaceMonitor(
-            segment_dir=settings.segment_dir,
-            on_low_disk=recording_service.stop,
-            warn_threshold_bytes=settings.disk_warn_bytes,
-            stop_threshold_bytes=settings.disk_stop_bytes,
-        )
-
-        health_service = RecordingHealthService(
-            recording_service=recording_service,
-            poll_interval_seconds=30.0,
-        )
-    else:
-        logger.info(
-            "Non-recording role '{}' — recording stack not built.",
-            user_config.role or "(not configured)",
-        )
+    # Built by the shared, Qt-free factory so the headless daemon/sidecar
+    # (ADR-0010) construct the same backend. Unpacked into locals so the rest
+    # of the Qt startup below is unchanged.
+    backend = build_recording_backend(
+        settings=settings,
+        user_config=user_config,
+        storage=storage,
+        all_monitors=all_monitors,
+        clips_dir=clips_dir,
+        raw_clips_dir=raw_clips_dir,
+    )
+    combined_builder     = backend.combined_builder
+    per_monitor_builders = backend.per_monitor_builders
+    workers              = backend.workers
+    preview_paths        = backend.preview_paths
+    recording_service    = backend.recording_service
+    clip_builder         = backend.clip_builder
+    event_service        = backend.event_service
+    disk_monitor         = backend.disk_monitor
+    health_service       = backend.health_service
+    event_store          = backend.event_store
 
     # ── Phase 4: Preview paths (embedded in recorder, no separate process) ──
     # preview_paths already populated above in the worker-building loop.
@@ -491,44 +359,9 @@ def main() -> None:
     if combined_builder is not None:
         combined_builder.recover(backfill_hours=settings.retention_hours)
 
-    def _shutdown(signum: int, frame: object) -> None:
-        logger.info("Shutdown signal received (signal={}).", signum)
-        tray_module.set_recording_active(False)
-        if health_service is not None:
-            health_service.stop()
-        detection_service.stop()
-        if disk_monitor is not None:
-            disk_monitor.stop()
-        if event_service is not None:
-            event_service.stop()
-        if recording_service is not None:
-            recording_service.stop()
-        for b in per_monitor_builders.values():
-            b.shutdown()
-        if combined_builder is not None:
-            combined_builder.shutdown()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
-
-    # ── Launch UI ─────────────────────────────────────────────────────
-    from PySide6.QtWidgets import QApplication          # noqa: PLC0415
-    from PySide6.QtQml import QQmlApplicationEngine     # noqa: PLC0415
-    from PySide6.QtCore import QUrl, QTimer             # noqa: PLC0415
-    from app.adapters.ui.app_bridge import AppBridge    # noqa: PLC0415
-    from app.adapters.ui.settings_bridge import SettingsBridge  # noqa: PLC0415
-    from app.adapters.ui.editor_bridge import EditorBridge  # noqa: PLC0415
-    from app.adapters.ui.tray_icon import TrayIcon      # noqa: PLC0415
-
-    app = QApplication(sys.argv)   # keep QApplication — QSystemTrayIcon requires it
-    app.setQuitOnLastWindowClosed(False)
-
-    # ── Player subsystem ──────────────────────────────────────────────
+    # ── Player / Editor / OneDrive services (no Qt) ───────────────────
     inspector      = FFprobeClipInspectorAdapter()
     player_service = PlayerService(inspector=inspector)
-
-    # ── Editor subsystem (Fase 0) — evidence-reel timeline + export ────
     # Rust segment engine when available, FFmpeg fallback otherwise (ADR-0006).
     segment_compiler = make_segment_compiler(codec=settings.video_codec)
     # reencode=True: frame-exact cuts + normalize every clip to one format, so
@@ -536,19 +369,17 @@ def main() -> None:
     editor_export    = FFmpegEditorExportAdapter(
         segment_compiler, inspector=inspector, reencode=True
     )
-    # ── OneDrive delivery (folder + share link) ───────────────────────
-    # Local adapter today (creates real folders under the OneDrive sync root,
-    # mints file:// links); swap to OneDriveGraphAdapter once Azure AD creds
-    # exist — the service/bridge/UI are adapter-agnostic.
+    # Local adapter today (real folders under the OneDrive sync root, file:// links);
+    # swap to OneDriveGraphAdapter once Azure AD creds exist — adapter-agnostic.
     cloud_share_service = CloudShareService(
         LocalShareAdapter(root=settings.onedrive_root)
     )
 
     # ── core/api layer (F1, ADR-0009) ─────────────────────────────────
-    # One EventBus + the facades over every built service. QML bridges and (in
-    # F2) the IPC channel are interchangeable input adapters over this layer.
-    # event_store doubles as the AuditPort so start/stop/unlock/setRole from the
-    # QML path are audited too (ADR-0011); it is None on non-recording roles.
+    # One EventBus + the facades over every built service. The QML bridges and
+    # the IPC channel are interchangeable input adapters over this layer.
+    # event_store doubles as the AuditPort so start/stop/unlock/setRole are
+    # audited on every path (ADR-0011); it is None on non-recording roles.
     file_browser = WindowsFileBrowserAdapter(
         nas_username=settings.nas_username, nas_password=settings.nas_password
     )
@@ -570,6 +401,70 @@ def main() -> None:
     )
     api.start()
 
+    def _stop_backend() -> None:
+        """Stop the whole recording stack — kills FFmpeg, no orphans (TD-3)."""
+        if health_service is not None:
+            health_service.stop()
+        detection_service.stop()
+        if disk_monitor is not None:
+            disk_monitor.stop()
+        if event_service is not None:
+            event_service.stop()
+        if recording_service is not None:
+            recording_service.stop()
+        for b in per_monitor_builders.values():
+            b.shutdown()
+        if combined_builder is not None:
+            combined_builder.shutdown()
+
+    # ── Role-conditional topology (ADR-0010): headless daemon / sidecar ──
+    # Operator = --daemon (decoupled, survives window close); IT/Supervisor =
+    # --sidecar (launched by Tauri, stops on stdin shutdown). Same IPC contract,
+    # no Qt. No flag → the QML path below (unchanged in F1).
+    mode = resolve_mode(sys.argv)
+    if mode in (DAEMON, SIDECAR):
+        from app.adapters.ipc.pipe_server import NamedPipeIpcServer  # noqa: PLC0415
+        from app.adapters.ipc.router import IpcRouter                # noqa: PLC0415
+        from app.runtime.headless import HeadlessRuntime             # noqa: PLC0415
+
+        # Hot-plug wiring without a UI bridge: add/remove recording workers.
+        if recording_service is not None and backend.build_worker_for is not None:
+            def _hot_add(monitor: MonitorInfo) -> None:
+                w = backend.build_worker_for(monitor)
+                w.segment_dir.mkdir(parents=True, exist_ok=True)
+                recording_service.add_worker(w)
+            detection_service._on_monitor_added   = _hot_add                         # noqa: SLF001
+            detection_service._on_monitor_removed = recording_service.remove_worker  # noqa: SLF001
+
+        pipe_server = NamedPipeIpcServer(IpcRouter(api), api.bus)
+        runtime = HeadlessRuntime(api, pipe_server, on_stop=_stop_backend)
+        logger.info("Headless '{}' mode — serving IPC contract, no Qt UI.", mode)
+        code = runtime.serve_daemon() if mode == DAEMON else runtime.serve_sidecar()
+        _release_single_instance_lock(_instance_lock)
+        sys.exit(code)
+
+    def _shutdown(signum: int, frame: object) -> None:
+        logger.info("Shutdown signal received (signal={}).", signum)
+        tray_module.set_recording_active(False)
+        _stop_backend()
+        api.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    # ── Launch UI ─────────────────────────────────────────────────────
+    from PySide6.QtWidgets import QApplication          # noqa: PLC0415
+    from PySide6.QtQml import QQmlApplicationEngine     # noqa: PLC0415
+    from PySide6.QtCore import QUrl, QTimer             # noqa: PLC0415
+    from app.adapters.ui.app_bridge import AppBridge    # noqa: PLC0415
+    from app.adapters.ui.settings_bridge import SettingsBridge  # noqa: PLC0415
+    from app.adapters.ui.editor_bridge import EditorBridge  # noqa: PLC0415
+    from app.adapters.ui.tray_icon import TrayIcon      # noqa: PLC0415
+
+    app = QApplication(sys.argv)   # keep QApplication — QSystemTrayIcon requires it
+    app.setQuitOnLastWindowClosed(False)
+
     editor_bridge = EditorBridge(editor_api=api.editor)
 
     # ── Bridge objects ────────────────────────────────────────────────
@@ -584,7 +479,7 @@ def main() -> None:
     )
     # ── Wire detection → recording + UI (bridge is now in scope) ────────
     def _on_monitor_added(monitor: MonitorInfo) -> None:
-        worker = _build_worker(monitor, storage, settings, _make_builder(monitor))
+        worker = backend.build_worker_for(monitor)
         worker.segment_dir.mkdir(parents=True, exist_ok=True)
         recording_service.add_worker(worker)
         worker.set_on_recording_failed(bridge.notify_recording_failed)

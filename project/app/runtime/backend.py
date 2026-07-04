@@ -1,0 +1,210 @@
+"""build_recording_backend — construct the recording stack, headless-safe (ADR-0010).
+
+Extracted verbatim from ``main.py`` so both the Qt entrypoint and the headless
+daemon/sidecar build the *same* backend.  It contains no Qt: just the recording
+services/adapters.  Non-recording roles (supervisor / unconfigured) get an empty
+backend.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+
+from loguru import logger
+
+from app.adapters.ffmpeg.recorder_adapter import FFmpegRecorderAdapter
+from app.adapters.ffmpeg.trim_adapter import FFmpegTrimAdapter
+from app.adapters.ffmpeg.timestamp_adapter import FFmpegTimestampAdapter
+from app.adapters.ffmpeg.hourly_recording_builder import HourlyRecordingBuilder
+from app.adapters.ffmpeg.combined_clip_builder import CombinedClipBuilder
+from app.adapters.filesystem.storage_adapter import FilesystemStorageAdapter
+from app.adapters.storage.sqlite_event_store import SqliteEventStoreAdapter
+from app.core.analytics.manual_event import analytic_event_from_context
+from app.core.analytics.sidecar import write_sidecar
+from app.core.disk_monitor import DiskSpaceMonitor
+from app.core.event_service import EventService
+from app.core.recording_health.service import RecordingHealthService
+from app.core.recording_service.buffer_manager import BufferManager
+from app.core.recording_service.clip_builder import ClipBuilder
+from app.core.recording_service.models import MonitorInfo, Segment
+from app.core.recording_service.monitor_worker import MonitorWorker
+from app.core.recording_service.service import RecordingService
+from app.core.recording_service.supervisor import RecorderSupervisor
+from app.core.role import is_recording_role
+
+
+def build_worker(
+    monitor: MonitorInfo,
+    storage: FilesystemStorageAdapter,
+    settings,
+    builder: HourlyRecordingBuilder,
+    preview_path: "Path | None" = None,
+) -> MonitorWorker:
+    """Factory: create a fully-wired MonitorWorker for one physical monitor."""
+    segment_dir = settings.segment_dir / f"m{monitor.index}"
+
+    def _on_segment_finalized(segment: Segment, _m=monitor) -> None:
+        builder.on_segment_finalized(segment, _m.index)
+
+    buffer = BufferManager(
+        storage=storage,
+        retention_count=max(1, (settings.retention_hours * 3600) // settings.segment_duration),
+        on_segment_finalized=_on_segment_finalized,
+    )
+    supervisor = RecorderSupervisor(
+        recorder=None,  # type: ignore[arg-type]
+        storage=storage,
+        segment_dir=segment_dir,
+        max_restarts=settings.max_recorder_restarts,
+    )
+    recorder = FFmpegRecorderAdapter(
+        segment_duration=settings.segment_duration,
+        framerate=settings.capture_framerate,
+        crf=settings.crf,
+        width=settings.output_width,
+        height=settings.output_height,
+        capture_source=settings.capture_source,
+        codec=settings.video_codec,
+        on_segment_ready=buffer.register_segment,
+        on_crash=supervisor.notify_crash,
+        preview_path=preview_path,
+        preview_fps=2,
+        preview_width=1280,
+    )
+    recorder.set_monitor(monitor)
+    supervisor._recorder = recorder  # noqa: SLF001
+    return MonitorWorker(
+        monitor=monitor,
+        recorder=recorder,
+        buffer_manager=buffer,
+        storage=storage,
+        segment_dir=segment_dir,
+        supervisor=supervisor,
+    )
+
+
+@dataclass
+class RecordingBackend:
+    """The recording stack for a role — empty for non-recording roles."""
+
+    combined_builder: Optional[CombinedClipBuilder] = None
+    per_monitor_builders: Dict[int, HourlyRecordingBuilder] = field(default_factory=dict)
+    workers: List[MonitorWorker] = field(default_factory=list)
+    preview_paths: Dict[int, Path] = field(default_factory=dict)
+    recording_service: Optional[RecordingService] = None
+    clip_builder: Optional[ClipBuilder] = None
+    event_service: Optional[EventService] = None
+    disk_monitor: Optional[DiskSpaceMonitor] = None
+    health_service: Optional[RecordingHealthService] = None
+    event_store: Optional[SqliteEventStoreAdapter] = None
+    # Factory to build a worker for a hot-added monitor (None on non-recording roles).
+    build_worker_for: Optional[Callable[[MonitorInfo], MonitorWorker]] = None
+
+    @property
+    def records(self) -> bool:
+        return self.recording_service is not None
+
+
+def build_recording_backend(
+    *,
+    settings,
+    user_config,
+    storage: FilesystemStorageAdapter,
+    all_monitors: List[MonitorInfo],
+    clips_dir: Path,
+    raw_clips_dir: Path,
+) -> RecordingBackend:
+    """Build the recording stack (or an empty backend for non-recording roles)."""
+    if not is_recording_role(user_config.role):
+        logger.info(
+            "Non-recording role '{}' — recording stack not built.",
+            user_config.role or "(not configured)",
+        )
+        return RecordingBackend()
+
+    backend = RecordingBackend()
+    backend.combined_builder = CombinedClipBuilder(
+        raw_dir=raw_clips_dir,
+        output_dir=clips_dir,
+        monitor_count=len(all_monitors),
+        timestamp_adapter=FFmpegTimestampAdapter(codec=settings.video_codec),
+        codec=settings.video_codec,
+        cell_width=settings.combined_cell_width,
+        cell_height=settings.combined_cell_height,
+        quality=settings.combined_quality,
+    )
+
+    def _make_builder(monitor: MonitorInfo) -> HourlyRecordingBuilder:
+        b = HourlyRecordingBuilder(
+            output_dir=raw_clips_dir,
+            monitor_count=1,
+            monitor_index=monitor.index,
+            window_minutes=settings.clip_window_minutes,
+            max_size_mb=settings.clip_max_size_mb,
+            on_clip_ready=backend.combined_builder.on_clip_ready,
+            codec=settings.video_codec,
+        )
+        backend.per_monitor_builders[monitor.index] = b
+        return b
+
+    def _build_worker_for(monitor: MonitorInfo, preview_path: "Path | None" = None) -> MonitorWorker:
+        return build_worker(monitor, storage, settings, _make_builder(monitor), preview_path)
+
+    backend.build_worker_for = _build_worker_for
+
+    for m in all_monitors:
+        preview_path = settings.segment_dir / f"m{m.index}" / "preview.jpg"
+        backend.preview_paths[m.index] = preview_path
+        backend.workers.append(_build_worker_for(m, preview_path))
+    for w in backend.workers:
+        w.segment_dir.mkdir(parents=True, exist_ok=True)
+
+    backend.recording_service = RecordingService(workers=backend.workers)
+
+    saved_fps = set(user_config.selected_monitor_fingerprints)
+    initial_selection = [m for m in all_monitors if m.fingerprint in saved_fps]
+    if not initial_selection:
+        initial_selection = [next((m for m in all_monitors if m.is_primary), all_monitors[0])]
+    backend.recording_service.change_monitors(initial_selection)
+
+    backend.clip_builder = ClipBuilder(
+        recording_service=backend.recording_service,
+        clip_adapter=FFmpegTrimAdapter(codec=settings.video_codec),
+        clips_dir=clips_dir,
+        pre_seconds=settings.event_pre_seconds,
+        post_seconds=settings.event_post_seconds,
+        timestamp_adapter=FFmpegTimestampAdapter(codec=settings.video_codec),
+    )
+
+    # Event persistence — manual events become queryable AnalyticEvents + sidecar.
+    backend.event_store = SqliteEventStoreAdapter(settings.segment_dir.parent / "events.db")
+
+    def _persist_manual_event(ctx, output_path) -> None:
+        ev = analytic_event_from_context(ctx, output_path)
+        backend.event_store.add(ev)
+        try:
+            write_sidecar(output_path, [ev])
+        except OSError:
+            logger.warning("Could not write event sidecar for {}", output_path)
+
+    backend.event_service = EventService(
+        clip_builder=backend.clip_builder,
+        post_seconds=settings.event_post_seconds,
+        cooldown_seconds=settings.event_cooldown_seconds,
+        retry_delay_seconds=settings.clip_retry_delay_seconds,
+        on_clip_built=_persist_manual_event,
+    )
+
+    backend.disk_monitor = DiskSpaceMonitor(
+        segment_dir=settings.segment_dir,
+        on_low_disk=backend.recording_service.stop,
+        warn_threshold_bytes=settings.disk_warn_bytes,
+        stop_threshold_bytes=settings.disk_stop_bytes,
+    )
+
+    backend.health_service = RecordingHealthService(
+        recording_service=backend.recording_service,
+        poll_interval_seconds=30.0,
+    )
+    return backend

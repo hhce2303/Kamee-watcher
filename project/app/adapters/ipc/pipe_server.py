@@ -43,6 +43,7 @@ class NamedPipeIpcServer:
         self._handle = None            # current pipe instance handle
         self._subscription = None
         self._ready = threading.Event()   # set once the pipe exists (start() waits)
+        self._bound = False               # True once CreateNamedPipe succeeded
         # Events are enqueued by the bus dispatcher thread and flushed by the
         # single serve thread — ALL pipe I/O happens on that one thread, so a
         # blocking read never serializes against an event write (synchronous
@@ -52,6 +53,10 @@ class NamedPipeIpcServer:
     @property
     def pipe_name(self) -> str:
         return self._pipe_name
+
+    def is_bound(self) -> bool:
+        """True once the pipe was successfully created (after start())."""
+        return self._bound
 
     def start(self) -> None:
         """Start the accept/serve loop on a background thread. Idempotent."""
@@ -105,8 +110,10 @@ class NamedPipeIpcServer:
                 )
             except pywintypes.error:
                 logger.exception("[ipc] CreateNamedPipe failed")
+                self._bound = False
                 self._ready.set()  # unblock start() even on failure
                 return
+            self._bound = True
             self._ready.set()  # the pipe now exists — clients may connect
             try:
                 # ERROR_PIPE_CONNECTED means a client connected between Create and
