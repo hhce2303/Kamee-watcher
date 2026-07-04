@@ -75,6 +75,8 @@ from app.adapters.ffmpeg.combined_clip_builder import CombinedClipBuilder
 from app.adapters.ffmpeg.editor_export_adapter import FFmpegEditorExportAdapter
 from app.adapters.native import make_segment_compiler
 from app.adapters.storage.sqlite_event_store import SqliteEventStoreAdapter
+from app.adapters.filesystem.file_browser_adapter import WindowsFileBrowserAdapter
+from app.core.api.bootstrap import build_api_layer
 from app.core.analytics.manual_event import analytic_event_from_context
 from app.core.analytics.sidecar import write_sidecar
 from app.adapters.filesystem.storage_adapter import FilesystemStorageAdapter
@@ -534,10 +536,6 @@ def main() -> None:
     editor_export    = FFmpegEditorExportAdapter(
         segment_compiler, inspector=inspector, reencode=True
     )
-    editor_bridge    = EditorBridge(
-        export_port=editor_export, clips_dir=clips_dir, inspector=inspector
-    )
-
     # ── OneDrive delivery (folder + share link) ───────────────────────
     # Local adapter today (creates real folders under the OneDrive sync root,
     # mints file:// links); swap to OneDriveGraphAdapter once Azure AD creds
@@ -546,15 +544,43 @@ def main() -> None:
         LocalShareAdapter(root=settings.onedrive_root)
     )
 
-    # ── Bridge objects ────────────────────────────────────────────────
-    bridge = AppBridge(
+    # ── core/api layer (F1, ADR-0009) ─────────────────────────────────
+    # One EventBus + the facades over every built service. QML bridges and (in
+    # F2) the IPC channel are interchangeable input adapters over this layer.
+    # event_store doubles as the AuditPort so start/stop/unlock/setRole from the
+    # QML path are audited too (ADR-0011); it is None on non-recording roles.
+    file_browser = WindowsFileBrowserAdapter(
+        nas_username=settings.nas_username, nas_password=settings.nas_password
+    )
+    api = build_api_layer(
+        detection_service=detection_service,
+        settings=settings,
+        user_config_port=user_config_port,
+        audit_port=event_store,
         recording_service=recording_service,
         event_service=event_service,
-        detection_service=detection_service,
         player_service=player_service,
-        clips_dir=clips_dir,
-        user_config_port=user_config_port,
+        export_port=editor_export,
+        inspector=inspector,
+        file_browser=file_browser,
         cloud_share_service=cloud_share_service,
+        clips_dir=clips_dir,
+        slc_storage_host=settings.slc_storage_host,
+        onedrive_base_folder=settings.onedrive_base_folder,
+    )
+    api.start()
+
+    editor_bridge = EditorBridge(editor_api=api.editor)
+
+    # ── Bridge objects ────────────────────────────────────────────────
+    bridge = AppBridge(
+        detection_service=detection_service,
+        clips_dir=clips_dir,
+        recording_api=api.recording,
+        clips_api=api.clips,
+        requests_api=api.requests,
+        delivery_api=api.delivery,
+        event_bus=api.bus,
     )
     # ── Wire detection → recording + UI (bridge is now in scope) ────────
     def _on_monitor_added(monitor: MonitorInfo) -> None:
@@ -573,6 +599,7 @@ def main() -> None:
     settings_bridge = SettingsBridge(
         user_config_port=user_config_port,
         settings=settings,
+        settings_api=api.settings,
     )
 
     # ── "Apply encoder now" callback ──────────────────────────────────
@@ -617,7 +644,9 @@ def main() -> None:
         logger.info("Role change — scheduling relaunch.")
         QTimer.singleShot(0, app.quit)
 
-    settings_bridge.set_relaunch_callback(_request_relaunch)
+    # Role change / autorecord side effects live on the shared settings facade
+    # (so the IPC path triggers them too); the encoder restart stays bridge-side.
+    api.settings.set_relaunch_cb(_request_relaunch)
 
     # ── Live autorecord toggle (IT) ───────────────────────────────────
     # IT records optionally: the stack is built but parked.  Toggling the
@@ -634,7 +663,7 @@ def main() -> None:
             tray_module.set_recording_active(False)
             logger.info("Autorecord disabled — recording stopped.")
 
-    settings_bridge.set_autorecord_callback(_apply_autorecord)
+    api.settings.set_autorecord_cb(_apply_autorecord)
 
     # ── QML engine ────────────────────────────────────────────────────
     engine = QQmlApplicationEngine()
@@ -740,6 +769,7 @@ def main() -> None:
 
     exit_code = app.exec()
 
+    api.stop()
     tray_module.set_recording_active(False)
     if health_service is not None:
         health_service.stop()

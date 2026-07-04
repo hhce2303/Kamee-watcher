@@ -48,6 +48,14 @@ class SettingsApi:
         self._role: str = cfg.role
         self._it_unlocked: bool = False
 
+    def set_relaunch_cb(self, cb: Optional[Callable[[], None]]) -> None:
+        """Register the process-relaunch callback (main.py wires it post-build)."""
+        self._relaunch_cb = cb
+
+    def set_autorecord_cb(self, cb: Optional[Callable[[bool], None]]) -> None:
+        """Register the live autorecord start/stop callback (main.py wires it)."""
+        self._autorecord_cb = cb
+
     # ── Audit helper ──────────────────────────────────────────────────
 
     def _audit_cmd(self, command: str, origin: str, detail: str = "", success: bool = True) -> None:

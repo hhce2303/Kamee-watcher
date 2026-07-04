@@ -1,13 +1,13 @@
 """bootstrap — assemble the core/api layer from built services (ADR-0009).
 
-``build_api_layer`` wires one :class:`EventBus` and the three facades over the
-services that ``main.py`` already constructs, and returns them in an
-:class:`ApiLayer`.  Both the QML adapter (M2) and the ``adapters/ipc`` channel
-(M3) drive this exact object — one facade, interchangeable adapters.
+``build_api_layer`` wires one :class:`EventBus` and the facades over the services
+that ``main.py`` already constructs, and returns them in an :class:`ApiLayer`.
+Both the QML adapters (M2) and the ``adapters/ipc`` channel (M3) drive this exact
+object — one facade set, interchangeable input adapters.
 
 The heavier "build the whole recording stack headless, by role" belongs to the
-daemon entrypoint (M4); this module deliberately takes already-built services so
-it introduces zero behaviour change to the running app when M2 adopts it.
+daemon entrypoint (M4); this module takes already-built services so adopting it
+introduces zero behaviour change to the running app.
 """
 from __future__ import annotations
 
@@ -15,14 +15,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from app.core.api.clips_api import ClipsApi
+from app.core.api.delivery_api import DeliveryApi
 from app.core.api.editor_api import EditorApi
 from app.core.api.events import EventBus
 from app.core.api.recording_api import RecordingApi
+from app.core.api.requests_api import RequestsApi
 from app.core.api.settings_api import SettingsApi
 from app.core.monitor_detection.service import MonitorDetectionService
 from app.core.ports.audit_port import AuditPort
 from app.core.ports.clip_inspector_port import ClipInspectorPort
 from app.core.ports.editor_export_port import EditorExportPort
+from app.core.ports.file_browser_port import FileBrowserPort
 from app.core.ports.user_config_port import UserConfigPort
 
 
@@ -34,6 +38,9 @@ class ApiLayer:
     recording: RecordingApi
     settings: SettingsApi
     editor: EditorApi
+    clips: ClipsApi
+    requests: RequestsApi
+    delivery: DeliveryApi
 
     def start(self) -> None:
         self.bus.start()
@@ -50,44 +57,66 @@ def build_api_layer(
     audit_port: Optional[AuditPort] = None,
     recording_service=None,
     event_service=None,
+    player_service=None,
     export_port: Optional[EditorExportPort] = None,
     inspector: Optional[ClipInspectorPort] = None,
+    file_browser: Optional[FileBrowserPort] = None,
+    cloud_share_service=None,
     clips_dir: Optional[Path] = None,
+    slc_storage_host: str = "",
+    onedrive_base_folder: str = "SLC/clips-supervisor",
     relaunch_cb: Optional[Callable[[], None]] = None,
     autorecord_cb: Optional[Callable[[bool], None]] = None,
     start_bus: bool = False,
 ) -> ApiLayer:
-    """Assemble the EventBus + the three facades over the given services.
+    """Assemble the EventBus + all facades over the given services.
 
     ``recording_service`` / ``event_service`` are ``None`` on non-recording roles
     (supervisor / unconfigured) — the facades degrade gracefully.
     """
     bus = EventBus()
 
-    recording = RecordingApi(
-        event_bus=bus,
-        detection_service=detection_service,
-        recording_service=recording_service,
-        event_service=event_service,
-        user_config_port=user_config_port,
-        audit_port=audit_port,
+    layer = ApiLayer(
+        bus=bus,
+        recording=RecordingApi(
+            event_bus=bus,
+            detection_service=detection_service,
+            recording_service=recording_service,
+            event_service=event_service,
+            user_config_port=user_config_port,
+            audit_port=audit_port,
+        ),
+        settings=SettingsApi(
+            event_bus=bus,
+            user_config_port=user_config_port,
+            settings=settings,
+            audit_port=audit_port,
+            relaunch_cb=relaunch_cb,
+            autorecord_cb=autorecord_cb,
+        ),
+        editor=EditorApi(
+            event_bus=bus,
+            export_port=export_port,
+            clips_dir=clips_dir,
+            inspector=inspector,
+        ),
+        clips=ClipsApi(
+            event_bus=bus,
+            clips_dir=clips_dir or Path("."),
+            player_service=player_service,
+            file_browser=file_browser,
+        ),
+        requests=RequestsApi(
+            event_bus=bus,
+            file_browser=file_browser,
+            slc_storage_host=slc_storage_host,
+        ),
+        delivery=DeliveryApi(
+            event_bus=bus,
+            cloud_share_service=cloud_share_service,
+            onedrive_base_folder=onedrive_base_folder,
+        ),
     )
-    settings_api = SettingsApi(
-        event_bus=bus,
-        user_config_port=user_config_port,
-        settings=settings,
-        audit_port=audit_port,
-        relaunch_cb=relaunch_cb,
-        autorecord_cb=autorecord_cb,
-    )
-    editor = EditorApi(
-        event_bus=bus,
-        export_port=export_port,
-        clips_dir=clips_dir,
-        inspector=inspector,
-    )
-
-    layer = ApiLayer(bus=bus, recording=recording, settings=settings_api, editor=editor)
     if start_bus:
         layer.start()
     return layer
