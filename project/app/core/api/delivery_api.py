@@ -38,6 +38,10 @@ class DeliveryApi:
     def available(self) -> bool:
         return self._service is not None
 
+    def set_request_port(self, request_port: Optional[RequestPort]) -> None:
+        """Wire the request port after construction (for active-operator lookup)."""
+        self._requests = request_port
+
     def compute_folder_path(self) -> str:
         """Derive ``<base>/<operator>/<YYYY-MM>`` (operator omitted if unknown)."""
         month = datetime.now().strftime("%Y-%m")

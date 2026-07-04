@@ -60,6 +60,15 @@ class RequestsApi:
         self._server = server
         self._client = client
 
+    def configure(self, *, request_port=None, slc_storage_host=None, server=None, client=None) -> None:
+        """Wire the request system after construction (main.py's set_request_system)."""
+        if request_port is not None:
+            self._requests = request_port
+        if slc_storage_host:
+            self._host = slc_storage_host
+        self._server = server
+        self._client = client
+
     # ── Storage / operator enumeration ────────────────────────────────
 
     def list_storages(self) -> List[StorageInfo]:
