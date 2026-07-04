@@ -1,7 +1,15 @@
 # The Watcher launcher — DEV MODE
 # Siempre arranca desde cero: borra user_config y requests para que
 # aparezca el wizard de selección de rol en cada ejecución.
-# Usage: .\run.ps1
+#
+# Usage:
+#   .\run.ps1                 # QML UI (default)
+#   .\run.ps1 -Mode daemon    # headless Operator daemon (no Qt), ADR-0010
+#   .\run.ps1 -Mode sidecar   # headless IT/Supervisor sidecar (stdin shutdown)
+param(
+    [ValidateSet("qml", "daemon", "sidecar")]
+    [string]$Mode = "qml"
+)
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -64,4 +72,12 @@ if ($pyside6QmlPath) {
     Write-Host "QML import path: $env:QML2_IMPORT_PATH"
 }
 
-python -m app.main
+# ── Launch by mode (ADR-0010) ─────────────────────────────────────────────────
+# QML is the default; daemon/sidecar run headless over the same IPC contract.
+switch ($Mode) {
+    "daemon"  { Write-Host "Launching headless DAEMON (Operator topology)..." -ForegroundColor Cyan
+                python -m app.main --daemon }
+    "sidecar" { Write-Host "Launching headless SIDECAR (IT/Supervisor topology)..." -ForegroundColor Cyan
+                python -m app.main --sidecar }
+    default   { python -m app.main }
+}
