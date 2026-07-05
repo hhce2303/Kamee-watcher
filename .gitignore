@@ -49,3 +49,9 @@ Thumbs.db
 
 # OneDrive conflict copies (multi-PC sync) — e.g. setup_env-DESKTOP-P84Q52M.ps1
 *-DESKTOP-*
+
+# Node / Vite (F2a — Tauri frontend)
+node_modules/
+
+# Rust / Tauri (F2a)
+src-tauri/target/

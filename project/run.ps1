@@ -3,11 +3,12 @@
 # aparezca el wizard de selección de rol en cada ejecución.
 #
 # Usage:
-#   .\run.ps1                 # QML UI (default)
+#   .\run.ps1                 # QML UI (default, legacy)
 #   .\run.ps1 -Mode daemon    # headless Operator daemon (no Qt), ADR-0010
 #   .\run.ps1 -Mode sidecar   # headless IT/Supervisor sidecar (stdin shutdown)
+#   .\run.ps1 -Mode tauri     # Tauri dev: launches Python sidecar + `cargo tauri dev` (F2a)
 param(
-    [ValidateSet("qml", "daemon", "sidecar")]
+    [ValidateSet("qml", "daemon", "sidecar", "tauri")]
     [string]$Mode = "qml"
 )
 
@@ -74,10 +75,33 @@ if ($pyside6QmlPath) {
 
 # ── Launch by mode (ADR-0010) ─────────────────────────────────────────────────
 # QML is the default; daemon/sidecar run headless over the same IPC contract.
+# tauri: starts Python sidecar in background then hands off to `cargo tauri dev`.
 switch ($Mode) {
     "daemon"  { Write-Host "Launching headless DAEMON (Operator topology)..." -ForegroundColor Cyan
                 python -m app.main --daemon }
     "sidecar" { Write-Host "Launching headless SIDECAR (IT/Supervisor topology)..." -ForegroundColor Cyan
                 python -m app.main --sidecar }
+    "tauri"   {
+        Write-Host "Launching TAURI dev mode: Python sidecar + Tauri shell (F2a)..." -ForegroundColor Cyan
+        # Build artefacts must live outside OneDrive (TD: sync-lock permissions).
+        $env:CARGO_TARGET_DIR = "$env:LOCALAPPDATA\the-watcher\target"
+        # Start Python sidecar in background; it binds the named pipe.
+        $sidecar = Start-Process python -ArgumentList "-m", "app.main", "--sidecar" `
+            -PassThru -NoNewWindow
+        Write-Host "  Python sidecar PID: $($sidecar.Id)" -ForegroundColor DarkGray
+        # Give the sidecar a moment to bind the pipe before Tauri connects.
+        Start-Sleep -Seconds 1
+        # Launch Tauri dev (blocks; Ctrl-C will kill both).
+        try {
+            Set-Location (Split-Path -Parent $scriptDir)
+            npm run tauri -- dev
+        } finally {
+            Write-Host "Stopping Python sidecar..." -ForegroundColor Yellow
+            # send shutdown via stdin before kill (TD-3: process.kill() misses PyInstaller children).
+            if (-not $sidecar.HasExited) {
+                $sidecar.Kill()
+            }
+        }
+    }
     default   { python -m app.main }
 }

@@ -23,6 +23,7 @@ from app.core.api.recording_api import RecordingApi
 from app.core.api.requests_api import RequestsApi
 from app.core.api.settings_api import SettingsApi
 from app.core.monitor_detection.service import MonitorDetectionService
+from app.core.ports.analytics_query_port import AnalyticsQueryPort
 from app.core.ports.audit_port import AuditPort
 from app.core.ports.clip_inspector_port import ClipInspectorPort
 from app.core.ports.editor_export_port import EditorExportPort
@@ -41,6 +42,7 @@ class ApiLayer:
     clips: ClipsApi
     requests: RequestsApi
     delivery: DeliveryApi
+    analytics: Optional[AnalyticsQueryPort] = None
 
     def start(self) -> None:
         self.bus.start()
@@ -67,6 +69,7 @@ def build_api_layer(
     onedrive_base_folder: str = "SLC/clips-supervisor",
     relaunch_cb: Optional[Callable[[], None]] = None,
     autorecord_cb: Optional[Callable[[bool], None]] = None,
+    analytics_query: Optional[AnalyticsQueryPort] = None,
     start_bus: bool = False,
 ) -> ApiLayer:
     """Assemble the EventBus + all facades over the given services.
@@ -116,6 +119,7 @@ def build_api_layer(
             cloud_share_service=cloud_share_service,
             onedrive_base_folder=onedrive_base_folder,
         ),
+        analytics=analytics_query,
     )
     if start_bus:
         layer.start()

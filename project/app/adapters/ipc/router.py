@@ -8,6 +8,7 @@ cannot spoof ``"ui"`` — and the facades' AuditPort records them automatically.
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict
 
 from loguru import logger
@@ -61,6 +62,11 @@ class IpcRouter:
 
     # ── Handler registry ──────────────────────────────────────────────
 
+    @staticmethod
+    def _parse_dt(value: str) -> datetime:
+        """Parse an ISO-8601 string (including JS Date.toISOString() 'Z' suffix)."""
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
     def _build_handlers(self) -> Dict[str, Callable[[dict], Any]]:
         r = self._api.recording
         s = self._api.settings
@@ -68,6 +74,7 @@ class IpcRouter:
         c = self._api.clips
         q = self._api.requests
         d = self._api.delivery
+        a = self._api.analytics
         o = self._origin
 
         return {
@@ -112,4 +119,26 @@ class IpcRouter:
             # ── Delivery ──
             "compute_folder_path": lambda p: {"path": d.compute_folder_path()},
             "ensure_folder_and_link": lambda p: d.ensure_folder_and_link(p.get("folder_path", "")),
+            # ── Analytics (F5) — read-only queries over the event store ──
+            "analytics_counts": lambda p: (
+                a.count_by_class(
+                    since=self._parse_dt(p["since"]),
+                    until=self._parse_dt(p["until"]),
+                    monitor_index=p.get("monitor_index"),
+                ) if a is not None else []
+            ),
+            "analytics_dwell": lambda p: (
+                a.dwell_by_track(
+                    since=self._parse_dt(p["since"]),
+                    until=self._parse_dt(p["until"]),
+                    monitor_index=p.get("monitor_index"),
+                ) if a is not None else []
+            ),
+            "analytics_zone_events": lambda p: (
+                a.events_in_zone(
+                    zone_name=p["zone_name"],
+                    since=self._parse_dt(p["since"]),
+                    until=self._parse_dt(p["until"]),
+                ) if a is not None else []
+            ),
         }

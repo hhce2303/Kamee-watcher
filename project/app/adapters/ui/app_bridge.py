@@ -109,8 +109,14 @@ class AppBridge(QObject):
         )
 
         # ── Qt-facing cached state ────────────────────────────────────
-        self._is_recording = False
-        self._record_sec = 0
+        # Initialize from actual recording state so QML sees the correct value
+        # on first read.  Without this, _is_recording starts False and
+        # isRecordingChanged fires ~1 s after startup when the poll timer first
+        # sees the already-running recorder — causing a False→True transition
+        # that triggers cursor-flash side-effects (recLockOverlay, VU timer).
+        _initial = self._recording.get_recording_state()
+        self._is_recording = _initial.is_recording
+        self._record_sec = _initial.record_seconds
         self._event_count = 0
         self._current_clip_path = ""
         self._current_clip_info: dict = {}
@@ -127,6 +133,18 @@ class AppBridge(QObject):
         self._video_sinks: dict[int, object] = {}
         self._preview_paths: dict[int, Path] = {}
         self._preview_mtimes: dict[int, float] = {}
+        # Monotonic timestamp used to enforce a startup grace period before the
+        # first preview read.  FFmpeg's gdigrab -update 1 writes JPEGs
+        # non-atomically; reading too early yields a partially-written file
+        # that QImage decodes as a corrupt frame, causing VideoOutput artifacts
+        # that look like cursor flickering.  1 s gives FFmpeg time to produce
+        # at least one complete preview frame.
+        self._preview_ready_at: float = 0.0  # set in set_preview_paths()
+
+        # Deduplicate monitor updates — only emit monitorsChanged when the set
+        # of device names actually changes, preventing a Repeater rebuild every
+        # 5 s from the detection service poll even when nothing changed.
+        self._last_monitor_key: frozenset[str] = frozenset()
 
         self.screenshot_provider = MonitorScreenshotProvider()
 
@@ -181,8 +199,12 @@ class AppBridge(QObject):
         self._monitors_from_service.emit(monitors)
 
     def _apply_monitors_from_service(self, monitors: object) -> None:
-        self._recording.on_monitors_updated(list(monitors))  # type: ignore[arg-type]
-        self.monitorsChanged.emit()
+        monitor_list = list(monitors)  # type: ignore[arg-type]
+        self._recording.on_monitors_updated(monitor_list)
+        new_key = frozenset(getattr(m, "device_name", str(m)) for m in monitor_list)
+        if new_key != self._last_monitor_key:
+            self._last_monitor_key = new_key
+            self.monitorsChanged.emit()
 
     @Slot()
     def identifyMonitors(self) -> None:
@@ -353,27 +375,41 @@ class AppBridge(QObject):
         logger.debug("Preview VideoSink registered for monitor idx={}.", monitor_idx)
 
     def set_preview_paths(self, paths: dict) -> None:
+        import time as _time
         self._preview_paths = {int(k): Path(v) for k, v in paths.items()}
+        self._preview_ready_at = _time.monotonic() + 1.0  # 1 s grace for FFmpeg init
         logger.info("Preview paths set: {}", {k: str(v) for k, v in self._preview_paths.items()})
 
     def on_preview_frame(self, monitor_idx: int, jpeg_bytes: bytes) -> None:
         pass  # preview now comes from the file poll, not a callback
 
     def _poll_preview_files(self) -> None:
+        import time as _time                      # noqa: PLC0415
         from PySide6.QtGui import QImage          # noqa: PLC0415
         from PySide6.QtMultimedia import QVideoFrame  # noqa: PLC0415
+
+        # Honour the startup grace period: skip all reads until FFmpeg has had
+        # time to write at least one complete preview frame.
+        if _time.monotonic() < self._preview_ready_at:
+            return
 
         for monitor_idx, path in self._preview_paths.items():
             try:
                 if not path.exists():
                     continue
-                mtime = path.stat().st_mtime
+                st = path.stat()
+                mtime = st.st_mtime
                 if mtime == self._preview_mtimes.get(monitor_idx):
+                    continue
+                # Skip files modified within the last 120 ms: FFmpeg's -update 1
+                # writes non-atomically, so a too-fresh mtime means the file is
+                # still being written and will produce a corrupt JPEG.
+                if (_time.time() - mtime) < 0.12:
                     continue
                 self._preview_mtimes[monitor_idx] = mtime
                 img = QImage(str(path))
-                if img.isNull():
-                    continue
+                if img.isNull() or img.width() < 16 or img.height() < 16:
+                    continue  # reject corrupt / truncated frames
                 sink = self._video_sinks.get(monitor_idx)
                 if sink is not None:
                     sink.setVideoFrame(QVideoFrame(img))

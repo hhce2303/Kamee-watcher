@@ -1,35 +1,47 @@
 # Tab de Edición → IA — Roadmap y buenas prácticas
 
 > Documento de **linealidad**: la secuencia de fases que lleva desde las herramientas de edición de
-> hoy hasta un sistema de detección de eventos (YOLO) + analíticos, sin reescrituras.
+> hoy hasta un sistema de detección de eventos (YOLO) + analíticos con UI React/Tauri, sin reescrituras.
 >
-> Estado: vivo · Fecha: 2026-06-22 · Referencias: [`goals.md`](goals.md) · [ADRs](adr/) · Frigate NVR (arquitectura de referencia).
+> Estado: vivo · Fecha: 2026-07-04 · Referencias: [`goals.md`](goals.md) · [ADRs](adr/) · Frigate NVR (arquitectura de referencia) · [Migración Tauri](../migration/README.md).
 
 ---
 
 ## Mapa de fases
 
 ```
-Fase 0  EDICIÓN + COSTURAS        ← aquí (lo que se construye ahora)
+Fase 0  EDICIÓN + COSTURAS                                         [HECHO]
    │    timeline multi-clip, trim, zoom, fullscreen, export inteligente
    │    + motor Rust de segmentos + ports/esquemas de IA (vacíos)
    ▼
-Fase 1  PERSISTENCIA DE EVENTOS
+Fase 1  PERSISTENCIA DE EVENTOS                                    [HECHO]
    │    EventStorePort + adapter SQLite + esquema sidecar *.events.json
    │    pintar eventos MANUALES existentes como marcadores en el timeline
    ▼
-Fase 2  PIPELINE DE INFERENCIA (mock)
+Fase 2  PIPELINE DE INFERENCIA (mock)                              [HECHO]
    │    DetectorPort + adapter MOCK + AutoEventService
    │    prueba punta-a-punta del flujo detect→evento→clip SIN modelo real
    ▼
-Fase 3  YOLO REAL (batch, out-of-process)
+Fase 3  YOLO REAL (batch, out-of-process)                          [HECHO*]
    │    análisis de clips grabados; modelo ONNX servido por crate Rust `ort`
    │    (DirectML/CUDA) — evita AGPL de Ultralytics; ver ADR-0005
    ▼
-Fase 4  TIEMPO REAL + ANALÍTICOS
-        dos etapas (gate de movimiento → detección), tracking (ByteTrack/BoT-SORT),
-        zonas, dashboards → nuevo tab "Analíticos"
+Fase 4  TIEMPO REAL + ANALÍTICOS                                   [HECHO]
+   │    dos etapas (gate de movimiento → detección), IouTracker,
+   │    Zonas, AnalyticsQueryPort + SqliteAnalyticsAdapter
+   ▼
+Fase 5  TAB ANALÍTICOS (TAURI/REACT)                               [SIGUIENTE]
+        AnalyticsTab.tsx · CountsChart · DwellTable · ZonePanel
+        IPC endpoints sobre AnalyticsQueryPort (F4) + canal F1
+        Tauri commands tipados (tauri-specta) + live events
+
+        ↳ F2a HECHO (2026-07-04): Tauri 2 shell + React bootstrapped
+          src-tauri/ (Rust IPC client, named-pipe, commands)
+          src/ (Vite+React 18+TS, tab shell, tokens CSS, useIpc, useTauriEvent)
+          Gate F5 desbloqueado
 ```
+
+_\* F3 infra lista; pendiente modelo ONNX permisivo (ADR-0005)_
 
 ---
 
@@ -66,11 +78,31 @@ backend **DirectML** (o CUDA) — reusa la cadena PyO3/maturin del motor de segm
 **Criterio de salida**: detección real sobre footage grabado escribe en `EventStore` y aparece en el
 timeline; licencia del modelo resuelta en [ADR-0005](adr/ADR-0005-yolo-licensing.md).
 
-### Fase 4 — Tiempo real + analíticos
-**Entregables**: dos etapas estilo Frigate (gate de movimiento barato en CPU → YOLO solo en regiones
-relevantes), tracking robusto (ByteTrack/BoT-SORT), zonas y dashboards (conteos, dwell time) en un
-nuevo tab **Analíticos**.
-**Criterio de salida**: detección en vivo sin bloquear la grabación; panel de analíticos consultable.
+### Fase 4 — Tiempo real + analíticos ✓
+**Entregables**: `MotionFilter` (gate CPU numpy), `LiveInferenceService` (wrapper Frigate-style sobre
+`DetectorPort`), `IouTracker` (SORT-lite, tracking estable sin scipy), `Zone` (polígono normalizado +
+ray-cast), `AnalyticsQueryPort` + `SqliteAnalyticsAdapter` (conteos, dwell, zonas consultables).
+**Criterio de salida**: ✓ Detección en vivo sin bloquear la grabación — 489 pruebas verdes, 0 regresiones.
+
+### Fase 5 — Tab Analíticos (Tauri/React) ✓ CERRADA
+**Entregables**:
+
+| Componente | Descripción |
+|-----------|-------------|
+| `AnalyticsTab.tsx` | ✓ Tab principal: filtros (rango 1h/6h/24h/7d, monitor) + tres paneles |
+| `CountsChart` | ✓ Gráfica de barras — Canvas API (sin D3/AGPL) |
+| `DwellTable` | ✓ Tabla de dwell times por `track_id`: clase, primer/último avistamiento, total |
+| `ZonePanel` | ✓ Eventos por zona con frecuencia relativa + barra proporcional |
+| `useLiveAnalytics` | ✓ Hook React: polling 10 s + refresh en cambio de filtros |
+| IPC endpoints | ✓ `analytics_counts`, `analytics_dwell`, `analytics_zone_events` en `IpcRouter` |
+| Tauri commands | ✓ Typed Rust commands (`AnalyticsFilter` / `ZoneFilter`) sin tauri-specta |
+| E2E básico | ✓ `test_f5_analytics_ipc.py` — 15 tests: stub + SQLite roundtrip + filtros |
+
+**Criterio de salida**: ✓ Tab Analíticos operativo en shell Tauri sin Qt/QML; filtros, gráficas,
+dwell y zonas funcionales; E2E básico verde — 514 pruebas verdes, 0 regresiones.
+**Desviación aceptada**: `useLiveAnalytics` usa polling (10 s) en lugar de suscripción a eventos de
+bus; la suscripción requeriría cablear el bus a los callbacks de `build_recording_backend`, lo cual
+es scope de backend y no de UI — queda como mejora post-F5.
 
 ---
 
@@ -105,3 +137,4 @@ nuevo tab **Analíticos**.
 | Rust-2 | (opcional) Hash de integridad de evidencia (`sha2`/`blake3`) en el export | 0/1 |
 | Rust-3 | Inferencia ONNX vía `ort` + DirectML como sidecar | 3 |
 | Rust-4 | (diferido) Captura DXGI Desktop Duplication vs gdigrab — solo si la captura es el cuello de botella | post-4 · [ADR-0007](adr/ADR-0007-dxgi-capture-deferred.md) |
+| Rust-5 | (post-F5) Port de `SqliteAnalyticsAdapter` a Rust puro (hexágono Track R) — solo cuando `ENGINE_READY` esté consolidado | Track R |

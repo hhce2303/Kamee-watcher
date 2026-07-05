@@ -1,0 +1,52 @@
+/* Design tokens — ported from Tokens.qml */
+:root {
+  /* Surfaces */
+  --bg-base:     #07090f;
+  --bg-surface:  #0d1220;
+  --bg-elevated: #141e30;
+
+  /* Accents */
+  --accent-primary: #38bdf8;
+  --accent-record:  #f43f5e;
+  --accent-monitor: #818cf8;
+  --accent-yellow:  #facc15;
+  --accent-ok:      #34d399;
+
+  /* Tinted */
+  --primary-dim: rgba(56, 189, 248, 0.12);
+  --record-dim:  rgba(244, 63, 94, 0.12);
+  --monitor-dim: rgba(129, 140, 248, 0.10);
+
+  /* Text */
+  --text-primary: #f8fafc;
+  --text-muted:   #64748b;
+  --text-dim:     #475569;
+
+  /* Borders */
+  --border-base:   #1e293b;
+  --border-subtle: #334155;
+
+  /* Radii */
+  --r-xs:   4px;
+  --r-sm:   6px;
+  --r-md:   10px;
+  --r-lg:   14px;
+  --r-pill: 999px;
+
+  /* Spacing */
+  --sp-2: 4px;
+  --sp-3: 8px;
+  --sp-4: 12px;
+  --sp-5: 16px;
+  --sp-6: 20px;
+  --sp-7: 28px;
+
+  /* Typography */
+  --font-sans: "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Consolas", "Cascadia Code", monospace;
+
+  /* Transitions */
+  --dur-fast: 120ms;
+  --dur-med:  180ms;
+  --dur-slow: 240ms;
+}

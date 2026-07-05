@@ -47,7 +47,10 @@ Window {
     // `visibility: Window.FullScreen` is not reliably honoured on startup in
     // frozen (PyInstaller) builds — the window can come up minimised — so we
     // re-assert it here. Harmless when already fullscreen.
-    // Also redirect activeTab to the first allowed tab for this role.
+    // Activate and set the initial tab synchronously on first render.
+    // requestActivate fires during scene-graph setup so the window gets focus
+    // before the first frame is composited — avoids a brief unfocused state
+    // (deferred via Qt.callLater) that caused a cursor-shape flash on Windows.
     Component.onCompleted: {
         root.showFullScreen()
         root.raise()
@@ -1079,20 +1082,28 @@ Window {
                                     MouseArea {
                                         anchors.fill: parent; acceptedButtons: Qt.LeftButton
                                         property real _ox: 0; property real _oy: 0
-                                        cursorShape: cpVidArea.zoomLevel>1 ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+                                        cursorShape: Qt.ArrowCursor
                                         onWheel: {
                                             var f=wheel.angleDelta.y>0?1.15:(1.0/1.15)
                                             var nz=Math.max(1.0,Math.min(8.0,cpVidArea.zoomLevel*f))
-                                            if(nz<=1.0){cpVidArea.resetZoom()}else{
+                                            if(nz<=1.0){
+                                                cpVidArea.resetZoom()
+                                                cursorShape = Qt.ArrowCursor
+                                            } else {
                                                 var r=nz/cpVidArea.zoomLevel
                                                 cpVidArea.panX=(mouseX-width/2)*(1-r)+cpVidArea.panX*r
                                                 cpVidArea.panY=(mouseY-height/2)*(1-r)+cpVidArea.panY*r
                                                 cpVidArea.zoomLevel=nz; cpVidArea.clampPan()
+                                                cursorShape = Qt.OpenHandCursor
                                             }
                                         }
-                                        onPressed:         { _ox=cpVidArea.panX-mouseX; _oy=cpVidArea.panY-mouseY }
+                                        onPressed: {
+                                            _ox=cpVidArea.panX-mouseX; _oy=cpVidArea.panY-mouseY
+                                            if (cpVidArea.zoomLevel > 1) cursorShape = Qt.ClosedHandCursor
+                                        }
+                                        onReleased:        { cursorShape = cpVidArea.zoomLevel > 1 ? Qt.OpenHandCursor : Qt.ArrowCursor }
                                         onPositionChanged: { if(!pressed||cpVidArea.zoomLevel<=1)return; cpVidArea.panX=_ox+mouseX; cpVidArea.panY=_oy+mouseY; cpVidArea.clampPan() }
-                                        onDoubleClicked:   cpVidArea.resetZoom()
+                                        onDoubleClicked:   { cpVidArea.resetZoom(); cursorShape = Qt.ArrowCursor }
                                     }
                                     // ── Format-not-supported overlay ────────────────────
                                     Rectangle {
@@ -1286,7 +1297,12 @@ Window {
         Rectangle {
             id: recLockOverlay
             z: 200
-            visible: (Policy.recordingIndicatorLocked === true) && AppBridge.isRecording
+            // Keep always in scene graph to avoid layout storms on visibility toggle.
+            // Opacity-driven appearance eliminates the full render-pass spike that
+            // caused the cursor glitch when recording auto-started for Operator.
+            opacity: (Policy.recordingIndicatorLocked === true) && AppBridge.isRecording ? 1 : 0
+            visible: true
+            Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
             anchors.top: parent.top
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.topMargin: 8
@@ -1304,7 +1320,7 @@ Window {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 8; height: 8; radius: 4; color: W.Tokens.accentRecord
                     SequentialAnimation on opacity {
-                        running: recLockOverlay.visible; loops: Animation.Infinite
+                        running: recLockOverlay.opacity > 0; loops: Animation.Infinite
                         NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
                         NumberAnimation { to: 1.0;  duration: 800; easing.type: Easing.InOutSine }
                     }

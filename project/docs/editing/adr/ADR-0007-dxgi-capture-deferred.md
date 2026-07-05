@@ -1,8 +1,13 @@
 # ADR-0007 — Captura DXGI en Rust: diferida
 
-- **Estado**: Diferido
+- **Estado**: Diferido (realizado parcialmente por [ADR-0013](ADR-0013-ddagrab-capture-cursor-flicker.md))
 - **Fecha**: 2026-06-22
 - **Requisitos**: Roadmap Track Rust (Rust-4)
+
+> **Nota (2026-07-04):** [ADR-0013](ADR-0013-ddagrab-capture-cursor-flicker.md) adelanta la ruta DXGI
+> **dentro de FFmpeg** (`ddagrab`, con fallback a gdigrab) para eliminar el titileo del cursor de
+> `CAPTUREBLT`. El **port Rust** (`windows-capture`, Track R) que describe este ADR sigue diferido y
+> arrancará con su propio ADR de profiling + spike de paridad.
 
 ## Contexto
 

@@ -315,6 +315,7 @@ def main() -> None:
     disk_monitor         = backend.disk_monitor
     health_service       = backend.health_service
     event_store          = backend.event_store
+    auto_event_service   = backend.auto_event_service
 
     # ── Phase 4: Preview paths (embedded in recorder, no separate process) ──
     # preview_paths already populated above in the worker-building loop.
@@ -338,6 +339,8 @@ def main() -> None:
     if disk_monitor is not None:
         disk_monitor.start()
     detection_service.start()
+    if auto_event_service is not None:
+        auto_event_service.start()
 
     # ── Startup recovery: rebuild clips from existing segments ────────
     for w in workers:
@@ -398,11 +401,14 @@ def main() -> None:
         clips_dir=clips_dir,
         slc_storage_host=settings.slc_storage_host,
         onedrive_base_folder=settings.onedrive_base_folder,
+        analytics_query=backend.analytics,
     )
     api.start()
 
     def _stop_backend() -> None:
         """Stop the whole recording stack — kills FFmpeg, no orphans (TD-3)."""
+        if auto_event_service is not None:
+            auto_event_service.stop()
         if health_service is not None:
             health_service.stop()
         detection_service.stop()
@@ -597,6 +603,8 @@ def main() -> None:
     if not engine.rootObjects():
         logger.critical("QML failed to load — stopping recording and exiting.")
         tray_module.set_recording_active(False)
+        if auto_event_service is not None:
+            auto_event_service.stop()
         if health_service is not None:
             health_service.stop()
         detection_service.stop()
@@ -666,6 +674,8 @@ def main() -> None:
 
     api.stop()
     tray_module.set_recording_active(False)
+    if auto_event_service is not None:
+        auto_event_service.stop()
     if health_service is not None:
         health_service.stop()
     detection_service.stop()

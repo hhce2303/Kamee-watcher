@@ -1,0 +1,121 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ── Tab bar ──────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-base);
+  flex-shrink: 0;
+}
+
+.tab-bar__logo {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  letter-spacing: 0.04em;
+  margin-right: var(--sp-5);
+  user-select: none;
+}
+
+.tab-bar button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
+  letter-spacing: 0.01em;
+}
+
+.tab-bar button:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.tab-bar button.active {
+  color: var(--accent-primary);
+  background: var(--primary-dim);
+}
+
+/* ── IPC status dot ──────────────────────────── */
+.ipc-badge {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ipc-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: background var(--dur-med) ease;
+}
+
+.ipc-badge__dot.connected {
+  background: var(--accent-ok);
+}
+
+/* ── Tab content ─────────────────────────────── */
+.tab-content {
+  flex: 1;
+  overflow: auto;
+  padding: var(--sp-7);
+}
+
+/* ── Placeholder tab ─────────────────────────── */
+.placeholder-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: var(--sp-4);
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.placeholder-tab h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.placeholder-tab p {
+  font-size: 13px;
+  max-width: 360px;
+}

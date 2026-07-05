@@ -18,5 +18,6 @@ cambia, se crea un ADR nuevo que la *supersede*.
 | [0010](ADR-0010-role-conditional-topology.md) | Topología de proceso condicional por rol (daemon vs sidecar) | Aceptado (roadmap) |
 | [0011](ADR-0011-local-ipc-security.md) | Canal IPC local autenticado (named pipe/token + audit) | Aceptado (roadmap) |
 | [0012](ADR-0012-rust-hexagon-endgame.md) | Hexágono Rust vía PyO3 como destino (extiende 0006) | Aceptado (roadmap) |
+| [0013](ADR-0013-ddagrab-capture-cursor-flicker.md) | Captura por ddagrab (DXGI) para eliminar el titileo del cursor (realiza parcial 0007) | Aceptado |
 
 ADR-0008..0012 son la migración de UI a Tauri 2.0 — ver [`docs/migration/`](../../migration/README.md).

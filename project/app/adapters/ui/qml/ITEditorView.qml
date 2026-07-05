@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtMultimedia
 import "." as W
 
 // ITEditorView.qml — IT dashboard shell for The Watcher.

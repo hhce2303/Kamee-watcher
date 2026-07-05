@@ -7,6 +7,7 @@ backend.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -19,9 +20,16 @@ from app.adapters.ffmpeg.timestamp_adapter import FFmpegTimestampAdapter
 from app.adapters.ffmpeg.hourly_recording_builder import HourlyRecordingBuilder
 from app.adapters.ffmpeg.combined_clip_builder import CombinedClipBuilder
 from app.adapters.filesystem.storage_adapter import FilesystemStorageAdapter
+from app.adapters.ml.iou_tracker import IouTracker
+from app.adapters.ml.live_inference_service import LiveInferenceService
+from app.adapters.ml.mock_detector import MockDetectorAdapter
+from app.adapters.storage.sqlite_analytics import SqliteAnalyticsAdapter
 from app.adapters.storage.sqlite_event_store import SqliteEventStoreAdapter
+from app.core.analytics.batch_clip_analyzer import BatchClipAnalyzer
 from app.core.analytics.manual_event import analytic_event_from_context
+from app.core.analytics.models import AnalyticEvent
 from app.core.analytics.sidecar import write_sidecar
+from app.core.auto_event_service import AutoEventService
 from app.core.disk_monitor import DiskSpaceMonitor
 from app.core.event_service import EventService
 from app.core.recording_health.service import RecordingHealthService
@@ -65,6 +73,7 @@ def build_worker(
         width=settings.output_width,
         height=settings.output_height,
         capture_source=settings.capture_source,
+        capture_backend=settings.capture_backend,
         codec=settings.video_codec,
         on_segment_ready=buffer.register_segment,
         on_crash=supervisor.notify_crash,
@@ -98,6 +107,10 @@ class RecordingBackend:
     disk_monitor: Optional[DiskSpaceMonitor] = None
     health_service: Optional[RecordingHealthService] = None
     event_store: Optional[SqliteEventStoreAdapter] = None
+    auto_event_service: Optional[AutoEventService] = None
+    batch_analyzer: Optional[BatchClipAnalyzer] = None
+    live_service: Optional[LiveInferenceService] = None
+    analytics: Optional[SqliteAnalyticsAdapter] = None
     # Factory to build a worker for a hot-added monitor (None on non-recording roles).
     build_worker_for: Optional[Callable[[MonitorInfo], MonitorWorker]] = None
 
@@ -136,13 +149,18 @@ def build_recording_backend(
     )
 
     def _make_builder(monitor: MonitorInfo) -> HourlyRecordingBuilder:
+        def _on_clip_ready(clip_path: Path) -> None:
+            backend.combined_builder.on_clip_ready(clip_path)
+            if backend.batch_analyzer is not None:
+                backend.batch_analyzer.queue_clip(clip_path)
+
         b = HourlyRecordingBuilder(
             output_dir=raw_clips_dir,
             monitor_count=1,
             monitor_index=monitor.index,
             window_minutes=settings.clip_window_minutes,
             max_size_mb=settings.clip_max_size_mb,
-            on_clip_ready=backend.combined_builder.on_clip_ready,
+            on_clip_ready=_on_clip_ready,
             codec=settings.video_codec,
         )
         backend.per_monitor_builders[monitor.index] = b
@@ -195,6 +213,81 @@ def build_recording_backend(
         retry_delay_seconds=settings.clip_retry_delay_seconds,
         on_clip_built=_persist_manual_event,
     )
+
+    # Fase 2/3 — automatic detection pipeline.
+    # Use OnnxDetectorAdapter when ONNX_MODEL_PATH is configured; fall back to mock.
+    _onnx_path = settings.onnx_model_path
+    if _onnx_path:
+        from app.adapters.ml.onnx_detector import OnnxDetectorAdapter
+        _detector = OnnxDetectorAdapter(
+            model_path=_onnx_path,
+            device=settings.inference_device,
+        )
+        logger.info("[backend] ONNX detector: {} (device={})", _onnx_path, settings.inference_device)
+    else:
+        _detector = MockDetectorAdapter()
+        logger.info("[backend] no ONNX model configured — using mock detector")
+
+    def _on_auto_event(event: AnalyticEvent) -> None:
+        backend.event_store.add(event)
+        ctx = backend.clip_builder.snapshot_event(event.start)
+
+        def _build_auto_clip() -> None:
+            output = backend.clip_builder.build(ctx)
+            if output:
+                updated = event.model_copy(update={"clip_path": output})
+                backend.event_store.add(updated)
+                try:
+                    write_sidecar(output, [updated])
+                except OSError:
+                    logger.warning("[auto-event] could not write sidecar for {}", output)
+
+        t = threading.Timer(settings.event_post_seconds, _build_auto_clip)
+        t.daemon = True
+        t.start()
+
+    # Fase 4 — wrap detector in LiveInferenceService (motion gate + tracker).
+    # AutoEventService subscribes to live_service, not the raw detector, so the
+    # motion gate and stable track IDs are applied before any event is emitted.
+    # BatchClipAnalyzer retains the raw _detector (no motion gate needed there).
+    _tracker = IouTracker(
+        iou_threshold=settings.tracker_iou_threshold,
+        max_age=settings.tracker_max_age,
+    )
+    backend.live_service = LiveInferenceService(
+        detector=_detector,
+        preview_paths=backend.preview_paths,
+        motion_threshold=settings.motion_threshold,
+        poll_interval=settings.live_poll_interval,
+        tracker=_tracker,
+    )
+
+    backend.auto_event_service = AutoEventService(
+        detector=backend.live_service,
+        on_event=_on_auto_event,
+        confidence_threshold=0.6,
+        cooldown_seconds=settings.event_cooldown_seconds,
+        zones=[],  # populated from config / UI in a later iteration
+    )
+
+    # Fase 3 — batch analysis of closed clips using the same detector + event pipeline.
+    # on_batch_event: clip already exists, so just persist the event + sidecar.
+    def _on_batch_event(event: AnalyticEvent, source_clip: Path) -> None:
+        backend.event_store.add(event)
+        try:
+            write_sidecar(source_clip, [event])
+        except OSError:
+            logger.warning("[batch-event] could not write sidecar for {}", source_clip)
+
+    backend.batch_analyzer = BatchClipAnalyzer(
+        detector=_detector,
+        on_batch_event=_on_batch_event,
+        confidence_threshold=0.6,
+        cooldown_seconds=settings.event_cooldown_seconds,
+        frame_interval_seconds=settings.batch_frame_interval,
+    )
+
+    backend.analytics = SqliteAnalyticsAdapter(backend.event_store)
 
     backend.disk_monitor = DiskSpaceMonitor(
         segment_dir=settings.segment_dir,

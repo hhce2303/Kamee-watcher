@@ -318,8 +318,9 @@ Item {
                                         font.family: W.Tokens.sans; font.pixelSize: 14
                                         MouseArea {
                                             anchors.fill: parent
-                                            cursorShape: isLast ? Qt.ArrowCursor : Qt.PointingHandCursor
-                                            onClicked: if (!isLast) root.goTocrumb(index)
+                                            cursorShape: Qt.PointingHandCursor
+                                            enabled: !isLast
+                                            onClicked: root.goTocrumb(index)
                                         }
                                     }
                                     Text {
