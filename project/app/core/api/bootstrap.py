@@ -28,6 +28,7 @@ from app.core.ports.audit_port import AuditPort
 from app.core.ports.clip_inspector_port import ClipInspectorPort
 from app.core.ports.editor_export_port import EditorExportPort
 from app.core.ports.file_browser_port import FileBrowserPort
+from app.core.ports.mp4_converter_port import Mp4ConverterPort
 from app.core.ports.user_config_port import UserConfigPort
 
 
@@ -63,6 +64,7 @@ def build_api_layer(
     export_port: Optional[EditorExportPort] = None,
     inspector: Optional[ClipInspectorPort] = None,
     file_browser: Optional[FileBrowserPort] = None,
+    mp4_converter: Optional[Mp4ConverterPort] = None,
     cloud_share_service=None,
     clips_dir: Optional[Path] = None,
     slc_storage_host: str = "",
@@ -108,6 +110,7 @@ def build_api_layer(
             clips_dir=clips_dir or Path("."),
             player_service=player_service,
             file_browser=file_browser,
+            mp4_converter=mp4_converter,
         ),
         requests=RequestsApi(
             event_bus=bus,

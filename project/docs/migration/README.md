@@ -21,6 +21,7 @@ Documentación completa de la transición de la UI de The Watcher desde **PySide
 | [How-to — Migrar una vista QML → React](howto-migrate-view.md) | How-to | Portar una vista concreta detrás del Application Facade sin regresión |
 | [How-to — Portar un puerto a Rust (PyO3)](howto-port-to-rust.md) | How-to | Mover un driven port a Rust con tests de paridad (Track R) |
 | [Deuda técnica y buenas prácticas](tech-debt-and-best-practices.md) | Reference | Tecnologías (con estado de mantenimiento), buenas prácticas por área, registro de deuda técnica/footguns — de la investigación `/deep-research` |
+| [Optimización del pipeline FFmpeg](ffmpeg-pipeline-optimization-research.md) | Reference | Investigación `/deep-research` 2026-07-05: zero-copy D3D11→QSV (−66% CPU medido), gobernanza de subprocesos (Job Objects), alternativas (Rust/GStreamer/libobs), matriz de decisión y plan de PoC |
 
 **Decisiones técnicas (ADRs)** — registro en [`../editing/adr/`](../editing/adr/README.md):
 

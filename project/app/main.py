@@ -47,7 +47,7 @@ from loguru import logger
 from pathlib import Path
 
 from app.infrastructure.config import get_settings
-from app.infrastructure.logging_setup import configure_logging
+from app.infrastructure.logging_setup import configure_logging, set_event_bus
 from app.core.recording_service.buffer_manager import BufferManager
 from app.core.recording_service.clip_builder import ClipBuilder
 from app.core.recording_service.models import MonitorInfo, Segment
@@ -79,6 +79,7 @@ from app.adapters.filesystem.file_browser_adapter import WindowsFileBrowserAdapt
 from app.core.api.bootstrap import build_api_layer
 from app.runtime.backend import build_recording_backend
 from app.runtime.mode import DAEMON, SIDECAR, resolve_mode
+from app.infrastructure.proc_telemetry import get_telemetry
 from app.core.analytics.manual_event import analytic_event_from_context
 from app.core.analytics.sidecar import write_sidecar
 from app.adapters.filesystem.storage_adapter import FilesystemStorageAdapter
@@ -86,6 +87,8 @@ from app.adapters.filesystem.user_config_adapter import JsonUserConfigAdapter
 from app.adapters.monitor.screeninfo_adapter import ScreeninfoMonitorAdapter
 from app.adapters.ui import tray_icon as tray_module
 from app.adapters.filesystem.request_adapter import JsonRequestAdapter
+from app.adapters.ws.request_server import ClipRequestServer
+from app.adapters.ws.request_client import ClipRequestClient
 from app.core.recording_service.supervisor import RecorderSupervisor
 from app.core.role import IT, SUPERVISOR
 from app.core.disk_monitor import DiskSpaceMonitor
@@ -316,6 +319,7 @@ def main() -> None:
     health_service       = backend.health_service
     event_store          = backend.event_store
     auto_event_service   = backend.auto_event_service
+    batch_analyzer       = backend.batch_analyzer
 
     # ── Phase 4: Preview paths (embedded in recorder, no separate process) ──
     # preview_paths already populated above in the worker-building loop.
@@ -341,6 +345,15 @@ def main() -> None:
     detection_service.start()
     if auto_event_service is not None:
         auto_event_service.start()
+    if batch_analyzer is not None:
+        # NOTE: batch_analyzer and auto_event_service's live_service share the
+        # same raw DetectorPort instance (backend.py) and each calls its own
+        # start()/stop() on it. MockDetectorAdapter is idempotent either way;
+        # OnnxDetectorAdapter.start() reloads the ONNX session on every call,
+        # so a real model pays a double-load here. Harmless today (no model
+        # configured by default) — revisit detector lifecycle ownership before
+        # shipping ONNX_MODEL_PATH to a fleet.
+        batch_analyzer.start()
 
     # ── Startup recovery: rebuild clips from existing segments ────────
     for w in workers:
@@ -386,6 +399,8 @@ def main() -> None:
     file_browser = WindowsFileBrowserAdapter(
         nas_username=settings.nas_username, nas_password=settings.nas_password
     )
+    # H.264 fallback for the player when HEVC won't decode in WebView2 (TD-1).
+    mp4_converter = FFmpegMp4ConverterAdapter(codec="h264")
     api = build_api_layer(
         detection_service=detection_service,
         settings=settings,
@@ -397,6 +412,7 @@ def main() -> None:
         export_port=editor_export,
         inspector=inspector,
         file_browser=file_browser,
+        mp4_converter=mp4_converter,
         cloud_share_service=cloud_share_service,
         clips_dir=clips_dir,
         slc_storage_host=settings.slc_storage_host,
@@ -404,11 +420,99 @@ def main() -> None:
         analytics_query=backend.analytics,
     )
     api.start()
+    set_event_bus(api.bus)  # logs → LogMessage bus event (C3), replaces the Qt log panel sink
+
+    # ── Request system (IT server / Supervisor client) — Qt-free (C1/C2) ──
+    # Wired here (shared, before the daemon/sidecar branch) so headless roles
+    # get clip-requests too — previously this only existed on the QML path,
+    # meaning a headless IT daemon could never receive a Supervisor's request.
+    # Both roles share the same JsonRequestAdapter (same filesystem schema).
+    # Callbacks only touch the transport-agnostic facade; the QML AppBridge's
+    # Qt signals (requestReceived/requestStatusChanged) no longer auto-fire on
+    # this path — QML's panels keep their manual "↺ Refrescar" button, and
+    # QML is deleted in F3 regardless.
+    _req_adapter = JsonRequestAdapter()
+    _req_server = None
+    _req_client = None
+
+    if user_config.role == IT:
+        _req_server = ClipRequestServer(
+            port=settings.it_ws_port,
+            request_adapter=_req_adapter,
+            on_request_received=api.requests.on_request_received,
+        )
+        _req_server.start()
+    elif user_config.role == SUPERVISOR:
+        _req_client = ClipRequestClient(
+            hosts=user_config.it_ws_hosts,
+            port=settings.it_ws_port,
+            on_status_received=api.requests.on_status_received,
+        )
+
+    api.requests.configure(
+        request_port=_req_adapter,
+        slc_storage_host=settings.slc_storage_host,
+        server=_req_server,
+        client=_req_client,
+    )
+
+    # ── Recording/clip failure → facade (shared, C2) ──────────────────
+    # Previously only wired on the QML path — a headless daemon/sidecar had
+    # no way to surface a recorder crash or a failed clip build to the UI.
+    for w in workers:
+        w.set_on_recording_failed(api.recording.on_recording_failed)
+    if event_service is not None:
+        event_service._on_clip_failed = api.recording.on_clip_failed  # noqa: SLF001
+
+    # ── "Apply encoder now" (shared, C2) ──────────────────────────────
+    # Stops the live recording, applies the new codec/driver to every recorder
+    # adapter, then restarts. Takes ~2 s; must not touch Qt from this thread
+    # (also used by the QML "Aplicar ahora" button via settings_bridge below).
+    def _restart_recording(codec: str, driver: str) -> None:
+        if recording_service is None:
+            return
+        logger.info("Restarting recording: codec={} driver={}", codec, driver)
+        was_running = recording_service.is_recording()
+        recording_service.stop()
+        encoder_selector.set_preferences(driver=driver)
+        # settings.video_codec is the live value used by adapters not yet
+        # instantiated (e.g. hot-added monitors).
+        settings.video_codec = codec
+        for worker in list(recording_service._workers.values()):  # noqa: SLF001
+            if hasattr(worker._recorder, "update_codec"):          # noqa: SLF001
+                worker._recorder.update_codec(codec)               # noqa: SLF001
+        if was_running:
+            recording_service.start()
+            tray_module.set_recording_active(True)
+            logger.info("Recording restarted with codec={} driver={}.", codec, driver)
+        else:
+            logger.info("Recording was stopped — not restarting (autorecord=off).")
+
+    api.settings.set_restart_encoder_cb(_restart_recording)
+
+    # ── Live autorecord toggle (shared, C2) ────────────────────────────
+    # IT records optionally: the stack is built but parked.  Toggling the
+    # setting starts/stops the existing workers in-process (no restart).
+    def _apply_autorecord(enabled: bool) -> None:
+        if recording_service is None:
+            return
+        if enabled:
+            recording_service.start()
+            tray_module.set_recording_active(True)
+            logger.info("Autorecord enabled — recording started.")
+        else:
+            recording_service.stop()
+            tray_module.set_recording_active(False)
+            logger.info("Autorecord disabled — recording stopped.")
+
+    api.settings.set_autorecord_cb(_apply_autorecord)
 
     def _stop_backend() -> None:
         """Stop the whole recording stack — kills FFmpeg, no orphans (TD-3)."""
         if auto_event_service is not None:
             auto_event_service.stop()
+        if batch_analyzer is not None:
+            batch_analyzer.stop()
         if health_service is not None:
             health_service.stop()
         detection_service.stop()
@@ -422,6 +526,12 @@ def main() -> None:
             b.shutdown()
         if combined_builder is not None:
             combined_builder.shutdown()
+        if recording_service is not None:
+            get_telemetry().stop()
+        if _req_server is not None:
+            _req_server.stop()
+        if _req_client is not None:
+            _req_client.stop()
 
     # ── Role-conditional topology (ADR-0010): headless daemon / sidecar ──
     # Operator = --daemon (decoupled, survives window close); IT/Supervisor =
@@ -439,13 +549,24 @@ def main() -> None:
                 w = backend.build_worker_for(monitor)
                 w.segment_dir.mkdir(parents=True, exist_ok=True)
                 recording_service.add_worker(w)
+                w.set_on_recording_failed(api.recording.on_recording_failed)
             detection_service._on_monitor_added   = _hot_add                         # noqa: SLF001
             detection_service._on_monitor_removed = recording_service.remove_worker  # noqa: SLF001
 
         pipe_server = NamedPipeIpcServer(IpcRouter(api), api.bus)
         runtime = HeadlessRuntime(api, pipe_server, on_stop=_stop_backend)
+        # Role change (first-run wizard or an IT-initiated change) stops this
+        # runtime cleanly (same teardown as SIGTERM), then main() relaunches —
+        # the Qt-free equivalent of the QML path's QTimer.singleShot(app.quit).
+        api.settings.set_relaunch_cb(runtime.request_stop)
         logger.info("Headless '{}' mode — serving IPC contract, no Qt UI.", mode)
         code = runtime.serve_daemon() if mode == DAEMON else runtime.serve_sidecar()
+        if _relaunch_flag["requested"]:
+            from app.infrastructure.relaunch import relaunch_and_exit  # noqa: PLC0415
+            relaunch_and_exit(
+                teardown=lambda: None,
+                release_lock=lambda: _release_single_instance_lock(_instance_lock),
+            )
         _release_single_instance_lock(_instance_lock)
         sys.exit(code)
 
@@ -503,32 +624,9 @@ def main() -> None:
         settings_api=api.settings,
     )
 
-    # ── "Apply encoder now" callback ──────────────────────────────────
-    # Called from a background thread when the user clicks "Aplicar ahora".
-    # Stops the live recording, applies the new codec/driver to every recorder
-    # adapter, then restarts. Takes ~2 s; must not touch Qt from this thread.
-    def _restart_recording(codec: str, driver: str) -> None:
-        if recording_service is None:
-            return
-        logger.info("Restarting recording: codec={} driver={}", codec, driver)
-        was_running = recording_service.is_recording()
-        recording_service.stop()
-        # Apply encoder preference and clear the probe cache.
-        encoder_selector.set_preferences(driver=driver)
-        # Push the new codec to every recorder adapter so it takes effect
-        # when start() is called below.  settings.video_codec is the live
-        # value used by adapters not yet instantiated (e.g. hot-added monitors).
-        settings.video_codec = codec
-        for worker in list(recording_service._workers.values()):  # noqa: SLF001
-            if hasattr(worker._recorder, "update_codec"):          # noqa: SLF001
-                worker._recorder.update_codec(codec)               # noqa: SLF001
-        if was_running:
-            recording_service.start()
-            tray_module.set_recording_active(True)
-            logger.info("Recording restarted with codec={} driver={}.", codec, driver)
-        else:
-            logger.info("Recording was stopped — not restarting (autorecord=off).")
-
+    # "Aplicar ahora" reuses the shared `_restart_recording` closure defined
+    # above (C2) — QML's button and the IPC `apply_encoder_now` command drive
+    # the identical callback.
     settings_bridge.set_restart_callback(_restart_recording)
 
     # ── Role-change relaunch ──────────────────────────────────────────
@@ -545,26 +643,10 @@ def main() -> None:
         logger.info("Role change — scheduling relaunch.")
         QTimer.singleShot(0, app.quit)
 
-    # Role change / autorecord side effects live on the shared settings facade
-    # (so the IPC path triggers them too); the encoder restart stays bridge-side.
+    # QML-specific: role changes quit the Qt event loop via QTimer so the
+    # calling slot returns first (headless mode uses runtime.request_stop
+    # instead — wired above, C2). Autorecord's callback is already shared.
     api.settings.set_relaunch_cb(_request_relaunch)
-
-    # ── Live autorecord toggle (IT) ───────────────────────────────────
-    # IT records optionally: the stack is built but parked.  Toggling the
-    # setting starts/stops the existing workers in-process (no restart).
-    def _apply_autorecord(enabled: bool) -> None:
-        if recording_service is None:
-            return
-        if enabled:
-            recording_service.start()
-            tray_module.set_recording_active(True)
-            logger.info("Autorecord enabled — recording started.")
-        else:
-            recording_service.stop()
-            tray_module.set_recording_active(False)
-            logger.info("Autorecord disabled — recording stopped.")
-
-    api.settings.set_autorecord_cb(_apply_autorecord)
 
     # ── QML engine ────────────────────────────────────────────────────
     engine = QQmlApplicationEngine()
@@ -624,30 +706,10 @@ def main() -> None:
     if event_service is not None:
         event_service._on_clip_failed = bridge.notify_clip_failed  # noqa: SLF001
 
-    # ── Request system (IT server / Supervisor client) ────────────────
-    # Both roles share the same JsonRequestAdapter (same filesystem schema).
-    # IT starts a WS server; Supervisor starts a WS client.
-    _req_adapter = JsonRequestAdapter()
-    _req_server  = None
-    _req_client  = None
-
-    if user_config.role == IT:
-        from app.adapters.ws.request_server import ClipRequestServer  # noqa: PLC0415
-        _req_server = ClipRequestServer(
-            port=settings.it_ws_port,
-            request_adapter=_req_adapter,
-            parent=app,
-        )
-        _req_server.start()
-
-    elif user_config.role == SUPERVISOR:
-        from app.adapters.ws.request_client import ClipRequestClient  # noqa: PLC0415
-        _req_client = ClipRequestClient(
-            hosts=user_config.it_ws_hosts,
-            port=settings.it_ws_port,
-            parent=app,
-        )
-
+    # Request system (server/client) is already constructed + wired into
+    # api.requests above (shared with the headless path); just point the
+    # bridge at the same instances so QML's listStorages/sendClipRequest/etc.
+    # go through the identical facade.
     bridge.set_request_system(
         adapter=_req_adapter,
         slc_storage_host=settings.slc_storage_host,
@@ -692,7 +754,7 @@ def main() -> None:
     if _req_server is not None:
         _req_server.stop()
     if _req_client is not None:
-        _req_client.disconnect_all()
+        _req_client.stop()
 
     if _relaunch_flag["requested"]:
         # The teardown above already stopped every service (including FFmpeg),

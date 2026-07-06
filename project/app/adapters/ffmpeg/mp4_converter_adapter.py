@@ -10,7 +10,9 @@ from loguru import logger
 
 from app.adapters.ffmpeg.encoder_selector import get_encoder, quality_flags, tag_for_encoder
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
+from app.adapters.ffmpeg.process_guard import assign_to_batch_job, batch_slot
 from app.core.ports.mp4_converter_port import Mp4ConverterPort
+from app.infrastructure.proc_telemetry import track_process, untrack_process
 
 
 class FFmpegMp4ConverterAdapter(Mp4ConverterPort):
@@ -60,29 +62,35 @@ class FFmpegMp4ConverterAdapter(Mp4ConverterPort):
         # Probe duration for progress calculation
         duration_s = self._probe_duration(source)
 
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        with batch_slot():
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            assign_to_batch_job(process)
+            track_process(process.pid, category="batch", label="mp4_converter")
 
-        # Read stderr in a background thread so the pipe never blocks FFmpeg
-        stderr_lines: list[str] = []
+            # Read stderr in a background thread so the pipe never blocks FFmpeg
+            stderr_lines: list[str] = []
 
-        def _read_stderr() -> None:
-            assert process.stderr is not None
-            for raw in process.stderr:
-                line = raw.decode("utf-8", errors="replace").rstrip()
-                stderr_lines.append(line)
-                if on_progress and duration_s > 0:
-                    self._parse_progress(line, duration_s, on_progress)
+            def _read_stderr() -> None:
+                assert process.stderr is not None
+                for raw in process.stderr:
+                    line = raw.decode("utf-8", errors="replace").rstrip()
+                    stderr_lines.append(line)
+                    if on_progress and duration_s > 0:
+                        self._parse_progress(line, duration_s, on_progress)
 
-        reader = threading.Thread(target=_read_stderr, daemon=True)
-        reader.start()
+            reader = threading.Thread(target=_read_stderr, daemon=True)
+            reader.start()
 
-        rc = process.wait(timeout=3600)
-        reader.join(timeout=5)
+            try:
+                rc = process.wait(timeout=3600)
+            finally:
+                untrack_process(process.pid)
+            reader.join(timeout=5)
 
         if rc != 0:
             stderr_tail = "\n".join(stderr_lines[-20:])

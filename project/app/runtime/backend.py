@@ -19,6 +19,7 @@ from app.adapters.ffmpeg.trim_adapter import FFmpegTrimAdapter
 from app.adapters.ffmpeg.timestamp_adapter import FFmpegTimestampAdapter
 from app.adapters.ffmpeg.hourly_recording_builder import HourlyRecordingBuilder
 from app.adapters.ffmpeg.combined_clip_builder import CombinedClipBuilder
+from app.adapters.ffmpeg.process_guard import configure_batch_concurrency, configure_batch_governance
 from app.adapters.filesystem.storage_adapter import FilesystemStorageAdapter
 from app.adapters.ml.iou_tracker import IouTracker
 from app.adapters.ml.live_inference_service import LiveInferenceService
@@ -40,6 +41,7 @@ from app.core.recording_service.monitor_worker import MonitorWorker
 from app.core.recording_service.service import RecordingService
 from app.core.recording_service.supervisor import RecorderSupervisor
 from app.core.role import is_recording_role
+from app.infrastructure.proc_telemetry import configure_telemetry, get_telemetry
 
 
 def build_worker(
@@ -74,6 +76,7 @@ def build_worker(
         height=settings.output_height,
         capture_source=settings.capture_source,
         capture_backend=settings.capture_backend,
+        capture_pipeline=settings.capture_pipeline,
         codec=settings.video_codec,
         on_segment_ready=buffer.register_segment,
         on_crash=supervisor.notify_crash,
@@ -135,6 +138,18 @@ def build_recording_backend(
             user_config.role or "(not configured)",
         )
         return RecordingBackend()
+
+    # PoC-2 governance (ffmpeg-pipeline-optimization-research.md §4): configure
+    # the shared batch Job Object + concurrency semaphore before any builder,
+    # converter, or analyzer can spawn an FFmpeg process.
+    configure_batch_governance(
+        weight=settings.batch_job_weight,
+        memory_limit_mb=settings.batch_job_memory_limit_mb,
+        cpu_hard_cap_percent=settings.batch_cpu_hard_cap_percent,
+    )
+    configure_batch_concurrency(settings.max_batch_ffmpeg)
+    configure_telemetry(settings.proc_telemetry_interval_seconds)
+    get_telemetry().start()
 
     backend = RecordingBackend()
     backend.combined_builder = CombinedClipBuilder(

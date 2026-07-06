@@ -40,6 +40,26 @@ def test_add_clip_publishes_timeline_changed() -> None:
     assert len(events) == 1
 
 
+def test_get_timeline_returns_clip_entries() -> None:
+    bus, api = _make()
+    api.add_clip(dto.AddClip(path="/a.mp4", duration_s=10.0))
+    api.add_clip_trimmed(dto.AddClipTrimmed(path="/b.mp4", duration_s=20.0, in_frac=0.25, out_frac=0.75))
+
+    entries = api.get_timeline()
+
+    assert len(entries) == 2
+    assert entries[0].source_path == str(Path("/a.mp4"))
+    assert entries[0].in_point_s == 0.0
+    assert entries[0].out_point_s == 10.0
+    assert entries[1].in_point_s == 5.0
+    assert entries[1].out_point_s == 15.0
+
+
+def test_get_timeline_empty() -> None:
+    _, api = _make()
+    assert api.get_timeline() == []
+
+
 def test_export_success_emits_started_progress_finished() -> None:
     port = FakeExportPort()
     bus, api = _make(port)

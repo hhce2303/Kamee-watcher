@@ -68,6 +68,18 @@ class EditorApi:
     def clip_count(self) -> int:
         return len(self._timeline)
 
+    def get_timeline(self) -> list[dto.ClipEntryDTO]:
+        """Full reel contents — the React editor has no other way to read it."""
+        return [
+            dto.ClipEntryDTO(
+                source_path=str(c.source_path),
+                source_duration_s=c.source_duration_s,
+                in_point_s=c.in_point_s,
+                out_point_s=c.out_point_s,
+            )
+            for c in self._timeline
+        ]
+
     def total_duration(self) -> float:
         return self._timeline.total_duration_s
 

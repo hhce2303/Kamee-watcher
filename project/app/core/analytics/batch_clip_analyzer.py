@@ -24,8 +24,10 @@ from typing import Any, Optional
 from loguru import logger
 
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
+from app.adapters.ffmpeg.process_guard import assign_to_batch_job, batch_slot
 from app.core.analytics.models import AnalyticEvent, Detection
 from app.core.ports.detector_port import DetectorPort
+from app.infrastructure.proc_telemetry import track_process, untrack_process
 
 
 class BatchClipAnalyzer:
@@ -110,34 +112,39 @@ class BatchClipAnalyzer:
         last_event_at: Optional[datetime] = None
         frame_idx = 0
 
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        try:
-            while True:
-                chunk = proc.stdout.read(frame_bytes)  # type: ignore[union-attr]
-                if len(chunk) < frame_bytes:
-                    break
+        with batch_slot():
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            assign_to_batch_job(proc)
+            track_process(proc.pid, category="batch", label="batch_analyzer")
+            try:
+                while True:
+                    chunk = proc.stdout.read(frame_bytes)  # type: ignore[union-attr]
+                    if len(chunk) < frame_bytes:
+                        break
 
-                frame_time = clip_start + timedelta(
-                    seconds=frame_idx * self._frame_interval
-                )
-                meta: dict[str, Any] = {
-                    "frame_time": frame_time,
-                    "monitor_index": 0,
-                    "width": self._input_w,
-                    "height": self._input_h,
-                }
-                detections = self._detector.analyze(chunk, meta)
-                last_event_at = self._maybe_emit(
-                    detections, frame_time, clip_path, last_event_at
-                )
-                frame_idx += 1
-        finally:
-            proc.stdout.close()  # type: ignore[union-attr]
-            proc.wait()
+                    frame_time = clip_start + timedelta(
+                        seconds=frame_idx * self._frame_interval
+                    )
+                    meta: dict[str, Any] = {
+                        "frame_time": frame_time,
+                        "monitor_index": 0,
+                        "width": self._input_w,
+                        "height": self._input_h,
+                    }
+                    detections = self._detector.analyze(chunk, meta)
+                    last_event_at = self._maybe_emit(
+                        detections, frame_time, clip_path, last_event_at
+                    )
+                    frame_idx += 1
+            finally:
+                untrack_process(proc.pid)
+                proc.stdout.close()  # type: ignore[union-attr]
+                proc.wait()
 
         logger.info("[batch-analyzer] done {} ({} frames)", clip_path.name, frame_idx)
 

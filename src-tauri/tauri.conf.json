@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "The Watcher",
         "width": 1280,
         "height": 800,
@@ -19,10 +20,23 @@
         "minHeight": 600,
         "resizable": true,
         "decorations": true
+      },
+      {
+        "label": "mini",
+        "url": "index.html?window=mini",
+        "title": "The Watcher · Mini",
+        "width": 320,
+        "height": 220,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "transparent": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' http://watcher.localhost data:; media-src 'self' http://watcher.localhost; style-src 'self' 'unsafe-inline'"
     }
   },
   "plugins": {

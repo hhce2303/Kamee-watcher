@@ -38,12 +38,33 @@ class FakePlayer:
         )
 
 
-def _api(tmp_path, player=None, browser=None):
+class FakeConverter:
+    """Runs synchronously (no thread) so tests don't need to wait/poll."""
+
+    def __init__(self, output_suffix="_converted.mp4", fail=False):
+        self._suffix = output_suffix
+        self._fail = fail
+        self.calls = []
+
+    def convert(self, source, output=None, on_progress=None):
+        self.calls.append(source)
+        if on_progress:
+            on_progress(0.5)
+            on_progress(1.0)
+        if self._fail:
+            raise RuntimeError("ffmpeg exploded")
+        out = output or source.with_stem(source.stem + "_converted").with_suffix(".mp4")
+        out.write_bytes(b"converted")
+        return out
+
+
+def _api(tmp_path, player=None, browser=None, converter=None):
     return ClipsApi(
         event_bus=EventBus(),
         clips_dir=tmp_path / "clips",
         player_service=player,
         file_browser=browser,
+        mp4_converter=converter,
     )
 
 
@@ -125,3 +146,80 @@ def test_list_directory_passthrough(tmp_path) -> None:
 def test_list_directory_no_browser_flags_failed(tmp_path) -> None:
     result = _api(tmp_path).list_directory(dto.ListDirectory(path="LOCAL_CLIPS"))
     assert result.failed is True
+
+
+def _sync(api) -> None:
+    """Make transcode run inline instead of on a background thread."""
+    api._run_transcode_async = api._do_transcode  # noqa: SLF001
+
+
+def test_transcode_clip_success_publishes_started_progress_finished(tmp_path) -> None:
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+    converter = FakeConverter()
+    api = _api(tmp_path, converter=converter)
+    _sync(api)
+    events = []
+    api._bus.subscribe(dto.TranscodeStarted, events.append)
+    api._bus.subscribe(dto.TranscodeProgress, events.append)
+    api._bus.subscribe(dto.TranscodeFinished, events.append)
+
+    api.transcode_clip(dto.TranscodeClip(path=str(clip)))
+    api._bus.drain()
+
+    kinds = [type(e).__name__ for e in events]
+    assert kinds == ["TranscodeStarted", "TranscodeProgress", "TranscodeProgress", "TranscodeFinished"]
+    assert converter.calls == [clip]
+    assert str(clip) not in api._transcoding
+
+
+def test_transcode_clip_failure_publishes_failed(tmp_path) -> None:
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+    api = _api(tmp_path, converter=FakeConverter(fail=True))
+    _sync(api)
+    failed = []
+    api._bus.subscribe(dto.TranscodeFailed, failed.append)
+
+    api.transcode_clip(dto.TranscodeClip(path=str(clip)))
+    api._bus.drain()
+
+    assert len(failed) == 1
+    assert "ffmpeg exploded" in failed[0].message
+    assert str(clip) not in api._transcoding
+
+
+def test_transcode_clip_no_converter_configured(tmp_path) -> None:
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+    api = _api(tmp_path)
+    failed = []
+    api._bus.subscribe(dto.TranscodeFailed, failed.append)
+
+    api.transcode_clip(dto.TranscodeClip(path=str(clip)))
+    api._bus.drain()
+
+    assert len(failed) == 1
+
+
+def test_transcode_clip_missing_file(tmp_path) -> None:
+    api = _api(tmp_path, converter=FakeConverter())
+    failed = []
+    api._bus.subscribe(dto.TranscodeFailed, failed.append)
+
+    api.transcode_clip(dto.TranscodeClip(path=str(tmp_path / "nope.mp4")))
+    api._bus.drain()
+
+    assert len(failed) == 1
+
+
+def test_transcode_clip_rejects_concurrent_duplicate(tmp_path) -> None:
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+    converter = FakeConverter()
+    api = _api(tmp_path, converter=converter)
+    api._transcoding.add(str(clip))  # simulate an in-flight transcode
+
+    api.transcode_clip(dto.TranscodeClip(path=str(clip)))
+
+    assert converter.calls == []

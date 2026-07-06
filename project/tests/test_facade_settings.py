@@ -30,6 +30,10 @@ class FakeUserConfigPort:
 
 class FakeSettings:
     it_pin = "1379"
+    clips_dir = r"C:\WatcherData\clips"
+    segment_dir = r"C:\WatcherData\segments"
+    video_codec = "hevc"
+    slc_storage_host = r"\\SIG-SLC-Storage"
 
 
 class FakeAudit:
@@ -118,3 +122,92 @@ def test_set_codec_ignores_invalid() -> None:
     assert ucp.load().codec == "hevc"
     api.set_codec(dto.SetCodec(codec="H264"))
     assert ucp.load().codec == "h264"
+
+
+def test_get_settings_snapshot(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.core.api.settings_api.autostart.is_autostart_enabled", lambda: True
+    )
+    bus, ucp, api = _make(role=IT)
+    snap = api.get_settings()
+    assert snap.role == IT
+    assert snap.codec == "hevc"
+    assert snap.driver == "auto"
+    assert snap.autorecord is False
+    assert snap.autostart is True
+    assert snap.it_unlocked is False
+
+
+def test_get_settings_falls_back_to_config_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.core.api.settings_api.autostart.is_autostart_enabled", lambda: False
+    )
+    bus, ucp, api = _make(role="")
+    ucp.load().clips_dir = ""  # unset → falls back to Settings.clips_dir
+    ucp.load().codec = None    # unset → falls back to Settings.video_codec
+    snap = api.get_settings()
+    assert snap.clips_dir == FakeSettings.clips_dir
+    assert snap.codec == FakeSettings.video_codec
+
+
+def test_get_media_roots() -> None:
+    bus, ucp, api = _make(role=IT)
+    roots = api.get_media_roots()
+    assert roots.segments_dir == FakeSettings.segment_dir
+    assert roots.clips_dir == FakeSettings.clips_dir
+    assert roots.storage_roots == [FakeSettings.slc_storage_host]
+
+
+def test_set_autostart_delegates_to_infrastructure(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "app.core.api.settings_api.autostart.set_autostart", calls.append
+    )
+    bus, ucp, api = _make(role=IT)
+    api.set_autostart(dto.SetAutostart(enabled=True))
+    assert calls == [True]
+
+
+def test_apply_encoder_now_no_callback_publishes_failed() -> None:
+    bus, ucp, api = _make(role=IT)
+    events = []
+    bus.subscribe(dto.EncoderRestartFailed, events.append)
+    api.apply_encoder_now()
+    bus.drain()
+    assert len(events) == 1
+
+
+def test_apply_encoder_now_runs_callback_and_publishes_lifecycle() -> None:
+    bus, ucp, api = _make(role=IT)
+    ucp.load().codec = "h264"
+    ucp.load().driver = "nvidia"
+    calls = []
+    api.set_restart_encoder_cb(lambda codec, driver: calls.append((codec, driver)))
+    # Run the "background thread" inline for deterministic assertions.
+    api._run_restart_async = api._do_restart_encoder  # noqa: SLF001
+
+    events = []
+    bus.subscribe(dto.EncoderRestartStarted, events.append)
+    bus.subscribe(dto.EncoderRestartFinished, events.append)
+    api.apply_encoder_now()
+    bus.drain()
+
+    assert calls == [("h264", "nvidia")]
+    assert [type(e).__name__ for e in events] == ["EncoderRestartStarted", "EncoderRestartFinished"]
+
+
+def test_apply_encoder_now_callback_error_publishes_failed() -> None:
+    bus, ucp, api = _make(role=IT)
+
+    def _boom(codec, driver):
+        raise RuntimeError("driver busy")
+
+    api.set_restart_encoder_cb(_boom)
+    api._run_restart_async = api._do_restart_encoder  # noqa: SLF001
+
+    failed = []
+    bus.subscribe(dto.EncoderRestartFailed, failed.append)
+    api.apply_encoder_now()
+    bus.drain()
+
+    assert len(failed) == 1 and "driver busy" in failed[0].message

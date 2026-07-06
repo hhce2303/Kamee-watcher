@@ -86,10 +86,14 @@ class IpcRouter:
             "stop_recording":      lambda p: r.stop_recording(dto.StopRecording(origin=o)),
             "toggle_monitor":      lambda p: r.toggle_monitor(dto.ToggleMonitor(fingerprint=p["fingerprint"])),
             # ── Settings (audited: set_role/unlock_it) ──
+            "get_settings":        lambda p: s.get_settings(),
+            "get_media_roots":     lambda p: s.get_media_roots(),
             "set_clips_dir":       lambda p: s.set_clips_dir(dto.SetClipsDir(path=p["path"])),
             "set_driver_index":    lambda p: s.set_driver_index(dto.SetDriverIndex(index=p["index"])),
             "set_codec":           lambda p: s.set_codec(dto.SetCodec(codec=p["codec"])),
             "set_autorecord":      lambda p: s.set_autorecord(dto.SetAutorecord(enabled=p["enabled"])),
+            "set_autostart":       lambda p: s.set_autostart(dto.SetAutostart(enabled=p["enabled"])),
+            "apply_encoder_now":   lambda p: s.apply_encoder_now(),
             "set_role":            lambda p: {"applied": s.set_role(dto.SetRole(role=p["role"], origin=o))},
             "unlock_it":           lambda p: {"ok": s.unlock_it(dto.UnlockIT(pin=p["pin"], origin=o))},
             # ── Editor ──
@@ -102,10 +106,12 @@ class IpcRouter:
             "clear_timeline":      lambda p: e.clear(),
             "export_timeline":     lambda p: e.export_timeline(dto.ExportTimeline(output_path=p["output_path"])),
             "editor_clip_count":   lambda p: {"count": e.clip_count()},
+            "get_timeline":        lambda p: e.get_timeline(),
             # ── Clips / browsing ──
             "list_clips":          lambda p: c.list_clips(),
             "load_clip":           lambda p: c.load_clip(dto.LoadClip(path=p["path"])),
             "list_directory":      lambda p: c.list_directory(dto.ListDirectory(path=p["path"])),
+            "transcode_clip":      lambda p: c.transcode_clip(dto.TranscodeClip(path=p["path"])),
             # ── Requests ──
             "list_storages":       lambda p: q.list_storages(),
             "list_operators":      lambda p: q.list_operators(p["storage_path"]),
@@ -119,6 +125,7 @@ class IpcRouter:
             # ── Delivery ──
             "compute_folder_path": lambda p: {"path": d.compute_folder_path()},
             "ensure_folder_and_link": lambda p: d.ensure_folder_and_link(p.get("folder_path", "")),
+            "reset_onedrive":      lambda p: d.reset_onedrive(),
             # ── Analytics (F5) — read-only queries over the event store ──
             "analytics_counts": lambda p: (
                 a.count_by_class(

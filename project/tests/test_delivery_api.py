@@ -72,3 +72,28 @@ def test_no_service_raises() -> None:
     assert api.available is False
     with pytest.raises(RuntimeError):
         api.ensure_folder_and_link("a/b")
+
+
+def test_reset_onedrive_noop_when_already_idle() -> None:
+    bus = EventBus()
+    api = DeliveryApi(event_bus=bus, cloud_share_service=None)
+    events = []
+    bus.subscribe(dto.OneDriveChanged, events.append)
+    api.reset_onedrive()
+    bus.drain()
+    assert events == []
+
+
+def test_reset_onedrive_clears_linked_state(tmp_path) -> None:
+    bus = EventBus()
+    api = DeliveryApi(event_bus=bus, cloud_share_service=_svc(tmp_path))
+    api.ensure_folder_and_link("SLC/clips-supervisor/2026-07")
+    bus.drain()  # flush the "linked" event so only the reset's "idle" event is asserted below
+
+    events = []
+    bus.subscribe(dto.OneDriveChanged, events.append)
+    api.reset_onedrive()
+    bus.drain()
+
+    assert len(events) == 1
+    assert (events[0].state, events[0].folder, events[0].link) == ("idle", "", "")

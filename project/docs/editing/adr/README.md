@@ -19,5 +19,7 @@ cambia, se crea un ADR nuevo que la *supersede*.
 | [0011](ADR-0011-local-ipc-security.md) | Canal IPC local autenticado (named pipe/token + audit) | Aceptado (roadmap) |
 | [0012](ADR-0012-rust-hexagon-endgame.md) | Hexágono Rust vía PyO3 como destino (extiende 0006) | Aceptado (roadmap) |
 | [0013](ADR-0013-ddagrab-capture-cursor-flicker.md) | Captura por ddagrab (DXGI) para eliminar el titileo del cursor (realiza parcial 0007) | Aceptado |
+| [0014](ADR-0014-zerocopy-qsv-capture-pipeline.md) | Pipeline de captura zero-copy (D3D11→QSV/CUDA) tras ddagrab (PoC-1) | Aceptado |
+| [0015](ADR-0015-batch-ffmpeg-governance.md) | Gobernanza de FFmpeg batch: Job Object compartido + semáforo + telemetría (PoC-2) | Aceptado |
 
 ADR-0008..0012 son la migración de UI a Tauri 2.0 — ver [`docs/migration/`](../../migration/README.md).

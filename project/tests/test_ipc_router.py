@@ -40,6 +40,9 @@ class Cfg:
     role = "it"
     autorecord = True
     selected_monitor_fingerprints: list = []
+    clips_dir = r"C:\WatcherData\clips"
+    driver = "auto"
+    codec = "hevc"
 
 
 class FakeUserConfigPort:
@@ -52,6 +55,10 @@ class FakeUserConfigPort:
 
 class FakeSettings:
     it_pin = "4321"
+    clips_dir = r"C:\WatcherData\clips"
+    segment_dir = r"C:\WatcherData\segments"
+    video_codec = "hevc"
+    slc_storage_host = r"\\SIG-SLC-Storage"
 
 
 class FakeAudit:
@@ -137,5 +144,65 @@ def test_bad_payload_returns_error_not_crash() -> None:
 def test_commands_cover_all_facades() -> None:
     cmds = IpcRouter(_layer()).commands
     for expected in ("get_monitors", "set_role", "list_clips", "list_storages",
-                     "export_timeline", "ensure_folder_and_link"):
+                     "export_timeline", "ensure_folder_and_link",
+                     "get_settings", "get_media_roots", "set_autostart"):
         assert expected in cmds
+
+
+def test_get_settings_via_ipc(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.core.api.settings_api.autostart.is_autostart_enabled", lambda: False
+    )
+    router = IpcRouter(_layer())
+    resp = router.handle({"id": "10", "cmd": "get_settings"})
+    assert resp["ok"] is True
+    assert resp["result"]["role"] == "it"
+    assert resp["result"]["codec"] == "hevc"
+    assert resp["result"]["autostart"] is False
+
+
+def test_get_media_roots_via_ipc() -> None:
+    router = IpcRouter(_layer())
+    resp = router.handle({"id": "11", "cmd": "get_media_roots"})
+    assert resp["ok"] is True
+    assert resp["result"]["segments_dir"] == FakeSettings.segment_dir
+    assert resp["result"]["storage_roots"] == [FakeSettings.slc_storage_host]
+
+
+def test_get_timeline_via_ipc() -> None:
+    router = IpcRouter(_layer())
+    router.handle({"id": "20", "cmd": "add_clip", "payload": {"path": "/a.mp4", "duration_s": 10.0}})
+    resp = router.handle({"id": "21", "cmd": "get_timeline"})
+    assert resp["ok"] is True
+    assert resp["result"][0]["source_path"].endswith("a.mp4")
+
+
+def test_set_autostart_via_ipc(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "app.core.api.settings_api.autostart.set_autostart", calls.append
+    )
+    router = IpcRouter(_layer())
+    resp = router.handle({"id": "12", "cmd": "set_autostart", "payload": {"enabled": True}})
+    assert resp["ok"] is True
+    assert calls == [True]
+
+
+def test_apply_encoder_now_via_ipc_no_callback() -> None:
+    router = IpcRouter(_layer())
+    resp = router.handle({"id": "13", "cmd": "apply_encoder_now"})
+    assert resp["ok"] is True  # facade degrades gracefully (publishes EncoderRestartFailed)
+
+
+def test_reset_onedrive_via_ipc() -> None:
+    router = IpcRouter(_layer())
+    resp = router.handle({"id": "14", "cmd": "reset_onedrive"})
+    assert resp["ok"] is True
+
+
+def test_transcode_clip_via_ipc_no_converter(tmp_path) -> None:
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+    router = IpcRouter(_layer())
+    resp = router.handle({"id": "15", "cmd": "transcode_clip", "payload": {"path": str(clip)}})
+    assert resp["ok"] is True  # facade degrades gracefully (publishes TranscodeFailed)

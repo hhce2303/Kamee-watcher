@@ -98,6 +98,41 @@ class ShareResultDTO(BaseModel):
     share_link: str
 
 
+class SettingsSnapshot(BaseModel):
+    """Full settings/role state for the UI shell — replaces polled bridge getters."""
+
+    model_config = ConfigDict(frozen=True)
+
+    role: str
+    clips_dir: str
+    codec: str
+    driver: str
+    autorecord: bool
+    autostart: bool
+    it_unlocked: bool
+
+
+class ClipEntryDTO(BaseModel):
+    """One trimmed clip on the evidence reel — mirrors core/editor/models.ClipEntry."""
+
+    model_config = ConfigDict(frozen=True)
+
+    source_path: str
+    source_duration_s: float
+    in_point_s: float
+    out_point_s: float
+
+
+class MediaRoots(BaseModel):
+    """Filesystem roots the UI's custom media protocol is allowed to serve from."""
+
+    model_config = ConfigDict(frozen=True)
+
+    segments_dir: str
+    clips_dir: str
+    storage_roots: list[str] = []
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Command DTOs  (UI → facade).  Grouped by which bridge they came from.
 # ══════════════════════════════════════════════════════════════════════
@@ -132,6 +167,10 @@ class LoadClip(_Command):
 
 
 class ListDirectory(_Command):
+    path: str
+
+
+class TranscodeClip(_Command):
     path: str
 
 
@@ -312,3 +351,41 @@ class RoleChanged(BaseEvent):
     event: Literal["role_changed"] = "role_changed"
     role: str
     it_unlocked: bool = False
+
+
+class TranscodeStarted(BaseEvent):
+    """HEVC→H.264 on-demand transcode for playback (TD-1: WebView2 has no SW HEVC)."""
+
+    event: Literal["transcode_started"] = "transcode_started"
+    path: str
+
+
+class TranscodeProgress(BaseEvent):
+    event: Literal["transcode_progress"] = "transcode_progress"
+    path: str
+    fraction: float
+
+
+class TranscodeFinished(BaseEvent):
+    event: Literal["transcode_finished"] = "transcode_finished"
+    path: str
+    output_path: str
+
+
+class TranscodeFailed(BaseEvent):
+    event: Literal["transcode_failed"] = "transcode_failed"
+    path: str
+    message: str
+
+
+class EncoderRestartStarted(BaseEvent):
+    event: Literal["encoder_restart_started"] = "encoder_restart_started"
+
+
+class EncoderRestartFinished(BaseEvent):
+    event: Literal["encoder_restart_finished"] = "encoder_restart_finished"
+
+
+class EncoderRestartFailed(BaseEvent):
+    event: Literal["encoder_restart_failed"] = "encoder_restart_failed"
+    message: str

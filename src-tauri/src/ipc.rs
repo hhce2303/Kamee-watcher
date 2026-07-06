@@ -14,9 +14,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Mutex, oneshot};
+
+use crate::media_protocol::{MediaRoots, MediaRootsState};
+use crate::policy::AppPolicy;
+use crate::tray;
 
 const MAX_FRAME: usize = 32 * 1024 * 1024; // 32 MiB — matches Python guard
 
@@ -97,6 +101,25 @@ impl IpcClient {
 
                 // Event: forward to the Tauri event bus so React can listen.
                 if let Some(disc) = msg.get("event").and_then(|v| v.as_str()) {
+                    match disc {
+                        "role_changed" => {
+                            if let Some(role) = msg.get("role").and_then(|v| v.as_str()) {
+                                if let Some(policy) = app.try_state::<AppPolicy>() {
+                                    policy.set_role(role);
+                                }
+                                tray::rebuild_menu(&app, role);
+                            }
+                        }
+                        "recording_state_changed" => {
+                            let active = msg
+                                .get("state")
+                                .and_then(|s| s.get("is_recording"))
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            tray::set_recording_active(&app, active);
+                        }
+                        _ => {}
+                    }
                     let _ = app.emit(disc, &msg);
                 }
             }
@@ -161,6 +184,26 @@ pub async fn ipc_connect_loop(state: IpcState, app: tauri::AppHandle) {
         match IpcClient::connect(&pipe_name, app.clone()).await {
             Ok((client, disc_rx)) => {
                 log::info!("[ipc] connected");
+
+                // Fetch the role/settings snapshot and the media-protocol allowlist
+                // now that the pipe is up — both are needed before the UI can trust
+                // the tray label or the custom protocol can serve any file.
+                if let Ok(settings) = client.send("get_settings", Value::Object(Default::default())).await {
+                    if let Some(role) = settings.get("role").and_then(|v| v.as_str()) {
+                        if let Some(policy) = app.try_state::<AppPolicy>() {
+                            policy.set_role(role);
+                        }
+                        tray::rebuild_menu(&app, role);
+                    }
+                }
+                if let Ok(roots_json) = client.send("get_media_roots", Value::Object(Default::default())).await {
+                    if let Some(roots) = MediaRoots::from_json(&roots_json) {
+                        if let Some(state) = app.try_state::<MediaRootsState>() {
+                            *state.0.write().await = Some(roots);
+                        }
+                    }
+                }
+
                 *state.0.lock().await = Some(client);
                 let _ = app.emit("ipc_connected", true);
 

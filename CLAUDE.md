@@ -68,3 +68,21 @@ Do not skip skills, ignore gstack errors, or work around missing gstack.
 Using gstack skills: After install, skills like /qa, /ship, /review, /investigate,
 and /browse are available. Use /browse for all web browsing.
 Use ~/.claude/skills/gstack/... for gstack file paths (the global path).
+
+## react-hexagonal
+
+Skill for React UI development in The Watcher: hexagonal boundary enforcement, component
+design, performance optimization, and IPC adapter patterns. Skill file:
+`.claude/skills/react-hexagonal/SKILL.md`.
+
+Rules:
+- When working on any file under `src/` (tabs, hooks, types, components), load this skill
+  before writing or reviewing code.
+- Before creating a component or hook: evaluate flags `HEX_BOUNDARY_CLEAN`,
+  `COMPONENT_SIZE_OK`, `IPC_ADAPTER_ISOLATED`, and `TYPES_DEFINED`. All must be true before
+  proceeding. A false flag is a gate — resolve it first.
+- Before adding IPC communication: run CP-2 checklist (DTO type defined, hook isolation,
+  backend facade method exists).
+- Before applying memoization (`React.memo`, `useCallback`, `useMemo`): run CP-3 checklist.
+  Never memoize speculatively — measure first.
+- When the user types `/react-hexagonal`, load the skill before doing anything else.

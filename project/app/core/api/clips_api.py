@@ -8,6 +8,7 @@ or UNC directories (via :class:`FileBrowserPort`).  No Qt, no ``os.scandir``, no
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from loguru import logger
 from app.core.api import dto
 from app.core.api.events import EventBus
 from app.core.ports.file_browser_port import BrowseListing, FileBrowserPort
+from app.core.ports.mp4_converter_port import Mp4ConverterPort
 
 
 @dataclass
@@ -47,11 +49,14 @@ class ClipsApi:
         clips_dir: Path,
         player_service=None,
         file_browser: Optional[FileBrowserPort] = None,
+        mp4_converter: Optional[Mp4ConverterPort] = None,
     ) -> None:
         self._bus = event_bus
         self._clips_dir = Path(clips_dir)
         self._player = player_service
         self._browser = file_browser
+        self._converter = mp4_converter
+        self._transcoding: set[str] = set()
 
     # ── Clip listing ──────────────────────────────────────────────────
 
@@ -140,3 +145,45 @@ class ClipsApi:
         if path == "LOCAL_RAW":
             return str(self._clips_dir.parent / "clips_raw")
         return path
+
+    # ── On-demand transcode (TD-1: WebView2 has no software HEVC decoder) ─
+
+    def transcode_clip(self, cmd: dto.TranscodeClip) -> None:
+        """Re-encode *path* to H.264 on a background thread; bus reports progress.
+
+        Used by the player's HEVC-playback-failed fallback — the source clip is
+        left untouched, a sibling ``*_converted.mp4`` is produced alongside it.
+        """
+        path = cmd.path
+        if path in self._transcoding:
+            logger.warning("[clips-api] transcode already in progress for {}", path)
+            return
+        if self._converter is None:
+            self._bus.publish(dto.TranscodeFailed(path=path, message="No hay conversor configurado."))
+            return
+        if not Path(path).exists():
+            self._bus.publish(dto.TranscodeFailed(path=path, message="Archivo no encontrado."))
+            return
+        self._transcoding.add(path)
+        self._bus.publish(dto.TranscodeStarted(path=path))
+        self._run_transcode_async(path)
+
+    def _run_transcode_async(self, path: str) -> None:
+        """Overridable in tests so transcode can run inline for determinism."""
+        threading.Thread(
+            target=self._do_transcode, args=(path,), daemon=True, name="clip-transcode"
+        ).start()
+
+    def _do_transcode(self, path: str) -> None:
+        try:
+            output = self._converter.convert(
+                Path(path),
+                on_progress=lambda f: self._bus.publish(dto.TranscodeProgress(path=path, fraction=f)),
+            )
+            self._bus.publish(dto.TranscodeFinished(path=path, output_path=str(output)))
+            logger.info("[clips-api] transcode finished: {} → {}", path, output)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[clips-api] transcode failed: {}", path)
+            self._bus.publish(dto.TranscodeFailed(path=path, message=str(exc)))
+        finally:
+            self._transcoding.discard(path)

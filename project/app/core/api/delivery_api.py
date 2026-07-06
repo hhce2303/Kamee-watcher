@@ -33,6 +33,9 @@ class DeliveryApi:
         self._service = cloud_share_service
         self._base = onedrive_base_folder
         self._requests = request_port
+        self._state = "idle"
+        self._folder = ""
+        self._link = ""
 
     @property
     def available(self) -> bool:
@@ -60,10 +63,16 @@ class DeliveryApi:
         path = (folder_path or "").strip() or self.compute_folder_path()
         result = self._service.ensure_folder_and_link(path)
         share = dto.ShareResultDTO(folder_path=result.folder_path, share_link=result.share_link)
-        self._bus.publish(
-            dto.OneDriveChanged(state="linked", folder=share.folder_path, link=share.share_link)
-        )
+        self._state, self._folder, self._link = "linked", share.folder_path, share.share_link
+        self._bus.publish(dto.OneDriveChanged(state=self._state, folder=self._folder, link=self._link))
         return share
+
+    def reset_onedrive(self) -> None:
+        """Clear delivery state (e.g. before starting a fresh free-edit session)."""
+        if (self._state, self._folder, self._link) == ("idle", "", ""):
+            return
+        self._state, self._folder, self._link = "idle", "", ""
+        self._bus.publish(dto.OneDriveChanged(state="idle", folder="", link=""))
 
     def _active_operator(self) -> str:
         """Operator of the current pending/processing request, or ''."""

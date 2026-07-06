@@ -429,24 +429,16 @@ class AppBridge(QObject):
     # ── Request system ────────────────────────────────────────────────
 
     def set_request_system(self, adapter, slc_storage_host: str, server=None, client=None) -> None:
-        """Wire the request infrastructure injected by main.py (after engine.load)."""
+        """Point the bridge at the request infrastructure main.py already wired
+        into ``api.requests`` (server/client are Qt-free — ADR-0009/C1 — so
+        their callbacks go straight to the facade; QML no longer gets a push
+        signal here, it refreshes via its own "↺ Refrescar" button instead).
+        """
         self._requests.configure(
             request_port=adapter, slc_storage_host=slc_storage_host, server=server, client=client
         )
         self._delivery.set_request_port(adapter)
-        if server is not None:
-            server.requestReceived.connect(self._on_request_received)
-        if client is not None:
-            client.statusReceived.connect(lambda rid, st: self._on_status_received(rid, st))
         self.requestSystemChanged.emit()
-
-    def _on_request_received(self, req_id: str) -> None:
-        self._requests.on_request_received(req_id)
-        self.requestReceived.emit()
-
-    def _on_status_received(self, req_id: str, status: str) -> None:
-        self._requests.on_status_received(req_id, status)
-        self.requestStatusChanged.emit(req_id, status)
 
     @Slot(result='QVariantList')
     def listStorages(self) -> list:

@@ -55,3 +55,7 @@ node_modules/
 
 # Rust / Tauri (F2a)
 src-tauri/target/
+.gstack/
+
+# DTO codegen intermediate (npm run gen:dto) — dto.gen.ts is the checked-in artifact
+src/types/dto.schema.json

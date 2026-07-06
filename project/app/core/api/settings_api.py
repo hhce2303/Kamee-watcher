@@ -8,6 +8,7 @@ transport-agnostic.
 """
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -20,6 +21,7 @@ from app.core.ports.audit_port import AuditPort
 from app.core.ports.user_config_port import UserConfigPort
 from app.core.policy import policy_for
 from app.core.role import VALID_ROLES, default_autorecord_for_role
+from app.infrastructure import autostart
 
 _DRIVERS = ["auto", "nvidia", "intel", "amd", "cpu"]
 
@@ -43,6 +45,8 @@ class SettingsApi:
         self._audit = audit_port
         self._relaunch_cb = relaunch_cb
         self._autorecord_cb = autorecord_cb
+        self._restart_encoder_cb: Optional[Callable[[str, str], None]] = None
+        self._restarting_encoder = False
 
         cfg = self._port.load()
         self._role: str = cfg.role
@@ -55,6 +59,13 @@ class SettingsApi:
     def set_autorecord_cb(self, cb: Optional[Callable[[bool], None]]) -> None:
         """Register the live autorecord start/stop callback (main.py wires it)."""
         self._autorecord_cb = cb
+
+    def set_restart_encoder_cb(self, cb: Optional[Callable[[str, str], None]]) -> None:
+        """Register the live encoder-restart callback: ``cb(codec, driver)``.
+
+        Called from a background thread — must not touch Qt directly.
+        """
+        self._restart_encoder_cb = cb
 
     # ── Audit helper ──────────────────────────────────────────────────
 
@@ -75,6 +86,27 @@ class SettingsApi:
     @property
     def is_it_unlocked(self) -> bool:
         return self._it_unlocked
+
+    def get_settings(self) -> dto.SettingsSnapshot:
+        """Full settings/role snapshot for the UI shell on connect."""
+        cfg = self._port.load()
+        return dto.SettingsSnapshot(
+            role=self._role,
+            clips_dir=cfg.clips_dir or str(self._settings.clips_dir),
+            codec=cfg.codec or self._settings.video_codec,
+            driver=cfg.driver,
+            autorecord=cfg.autorecord,
+            autostart=autostart.is_autostart_enabled(),
+            it_unlocked=self._it_unlocked,
+        )
+
+    def get_media_roots(self) -> dto.MediaRoots:
+        """Filesystem roots the UI's custom media protocol may serve from."""
+        return dto.MediaRoots(
+            segments_dir=str(self._settings.segment_dir),
+            clips_dir=str(self._settings.clips_dir),
+            storage_roots=[self._settings.slc_storage_host] if self._settings.slc_storage_host else [],
+        )
 
     # ── Encoder / system commands ─────────────────────────────────────
 
@@ -97,6 +129,40 @@ class SettingsApi:
         self._persist(lambda c: setattr(c, "autorecord", cmd.enabled))
         if self._autorecord_cb is not None:
             self._autorecord_cb(cmd.enabled)
+
+    def set_autostart(self, cmd: dto.SetAutostart) -> None:
+        autostart.set_autostart(cmd.enabled)
+
+    def apply_encoder_now(self) -> None:
+        """Restart the live recording with the currently persisted codec/driver."""
+        if self._restart_encoder_cb is None:
+            logger.warning("[settings-api] applyEncoderNow: no restart callback registered.")
+            self._bus.publish(dto.EncoderRestartFailed(message="No hay callback de reinicio configurado."))
+            return
+        if self._restarting_encoder:
+            return
+        cfg = self._port.load()
+        codec = cfg.codec or self._settings.video_codec
+        driver = cfg.driver
+        self._restarting_encoder = True
+        self._bus.publish(dto.EncoderRestartStarted())
+        self._run_restart_async(codec, driver)
+
+    def _run_restart_async(self, codec: str, driver: str) -> None:
+        """Overridable in tests so the restart can run inline for determinism."""
+        threading.Thread(
+            target=self._do_restart_encoder, args=(codec, driver), daemon=True, name="encoder-restart"
+        ).start()
+
+    def _do_restart_encoder(self, codec: str, driver: str) -> None:
+        try:
+            self._restart_encoder_cb(codec, driver)
+            self._bus.publish(dto.EncoderRestartFinished())
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[settings-api] applyEncoderNow: restart callback raised.")
+            self._bus.publish(dto.EncoderRestartFailed(message=str(exc)))
+        finally:
+            self._restarting_encoder = False
 
     # ── Role commands (audited) ───────────────────────────────────────
 
