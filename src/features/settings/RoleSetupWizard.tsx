@@ -35,12 +35,17 @@ const ROLES = [
 export default function RoleSetupWizard() {
   const [selected, setSelected] = useState<string>("");
   const [configuring, setConfiguring] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function confirm() {
     if (!selected || configuring) return;
     setConfiguring(true);
+    setError(null);
     try {
-      await setRole(selected);
+      const { applied } = await setRole(selected);
+      if (!applied) setError("No se pudo configurar el rol. Intenta de nuevo.");
+    } catch (e) {
+      setError(String(e));
     } finally {
       setConfiguring(false);
     }
@@ -98,7 +103,7 @@ export default function RoleSetupWizard() {
           })}
         </div>
 
-        <div style={{ display: "flex", justifyContent: "center", marginTop: 32 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginTop: 32 }}>
           <button
             type="button"
             disabled={!selected || configuring}
@@ -117,6 +122,7 @@ export default function RoleSetupWizard() {
           >
             {configuring ? "Configurando…" : "Configurar este equipo"}
           </button>
+          {error && <p style={{ color: "var(--accent-record)", fontSize: 13 }}>{error}</p>}
         </div>
       </div>
     </div>

@@ -14,6 +14,13 @@ const STATUS_LABEL: Record<string, string> = {
   declined: "DECLINADA",
 };
 
+const GROUPS: { key: ClipRequest["status"]; label: string }[] = [
+  { key: "pending", label: "PENDIENTES" },
+  { key: "processing", label: "PROCESANDO" },
+  { key: "done", label: "LISTAS" },
+  { key: "declined", label: "DECLINADAS" },
+];
+
 interface ITInboxPanelProps {
   /** Opens a request in the editor (ITEditorView's "cola" view); omitted when
    * embedded read-only in RecordingView's Ctrl+I panel. */
@@ -36,13 +43,24 @@ export default function ITInboxPanel({ onOpen }: ITInboxPanelProps) {
         )}
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 16 }}>
         {requests.length === 0 && (
           <p style={{ color: "var(--text-dim)", fontSize: 13, textAlign: "center", marginTop: 20 }}>Sin solicitudes.</p>
         )}
-        {requests.map((r) => (
-          <RequestCard key={r.id} request={r} onSetStatus={setStatus} onOpen={onOpen} />
-        ))}
+        {GROUPS.map((g) => {
+          const group = requests.filter((r) => r.status === g.key);
+          if (group.length === 0) return null;
+          return (
+            <div key={g.key} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "1px" }}>
+                {g.label} ({group.length})
+              </span>
+              {group.map((r) => (
+                <RequestCard key={r.id} request={r} onSetStatus={setStatus} onOpen={onOpen} />
+              ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -84,12 +102,17 @@ function RequestCard({
         {request.start_time} → {request.end_time}
       </div>
       {request.description && <p style={{ color: "var(--text-muted)", fontSize: 14 }}>{request.description}</p>}
-      {request.status !== "done" && (
+      {request.status !== "done" && request.status !== "declined" && (
         <div style={{ display: "flex", gap: 8 }}>
           {request.status === "pending" && (
-            <button type="button" onClick={(e) => { e.stopPropagation(); onSetStatus(request.id, "processing"); }} style={actionBtnStyle("var(--accent-primary)")}>
-              Marcar procesando
-            </button>
+            <>
+              <button type="button" onClick={(e) => { e.stopPropagation(); onSetStatus(request.id, "processing"); }} style={actionBtnStyle("var(--accent-primary)")}>
+                Marcar procesando
+              </button>
+              <button type="button" onClick={(e) => { e.stopPropagation(); onSetStatus(request.id, "declined"); }} style={actionBtnStyle("var(--accent-record)")}>
+                Declinar
+              </button>
+            </>
           )}
           <button type="button" onClick={(e) => { e.stopPropagation(); onSetStatus(request.id, "done"); }} style={actionBtnStyle("var(--accent-ok)")}>
             Marcar listo

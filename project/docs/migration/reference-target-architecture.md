@@ -98,25 +98,34 @@ Orden = prioridad de migración a Rust. Binding = **PyO3 in-process** durante la
 |------|-----|--------|
 | **F0** | Gate GO/NO-GO **bloqueante**: 6 spikes en máquina real (ver [how-to F0](howto-f0-gate.md)) | ✅ GO (2026-07-02) |
 | **F1** | Backend headless: `core/api` (Facade+DTOs+bus), `adapters/ipc`, arranque por rol; QML sigue vivo | ✅ **cerrada** (2026-07-04, `feat/f1-backend-headless`) |
-| **F2** | UI React a paridad, vista por vista (editor al final); F2a-d + buffer | ~8-13 sem |
-| **F3** | Cutover: rollout por cohorte, empaquetado Tauri, **eliminación total de QML+PySide6** | ~2-3 sem |
+| **F2** | UI React a paridad, vista por vista (editor al final) | ✅ **cerrada** (2026-07-06) |
+| **F3** | Cutover: **eliminación total de QML+PySide6**, WS Qt-free, scripts Tauri-first | ✅ **cerrada** (2026-07-06, dev-only — instalador Tauri es fase siguiente) |
 | **Track R** | Hexágono Rust port-por-port vía PyO3 (post-cutover) | 1er port live (`ENGINE_READY=true`) |
 
 ## Archivos afectados
 
-**Se reemplazan y luego se ELIMINAN** (F3): todo `project/app/adapters/ui/` — `app_bridge.py`,
-`settings_bridge.py`, `editor_bridge.py`, `tray_icon.py`, `screenshot_provider.py`,
-`log_handler.py`, `main_window.py`, y los 29 `.qml` bajo `adapters/ui/qml/`.
+**Eliminados (F3):** todo `project/app/adapters/ui/` (`app_bridge.py`, `settings_bridge.py`,
+`editor_bridge.py`, `tray_icon.py`, `screenshot_provider.py`, `log_handler.py`, `main_window.py`,
+`button_trigger.py`, `Main.qml` + 28 `.qml` + 2 `qmldir`), `project/prototype/` completo, y los
+tests Qt (`qml_smoke.py`, `qml_runtime_smoke.py`, `test_ws_inbound.py`, `test_ws_outbound.py`,
+`test_app_bridge_onedrive.py`, `test_editor_bridge.py`, `test_settings_bridge.py`).
 
-**Se modifican:** `project/app/main.py` (arranque daemon/sidecar; quitar bootstrap Qt),
-`project/app/adapters/ws/request_server.py` y `request_client.py` (quitar `parent` Qt),
-[`project/run.ps1`](../../run.ps1) (lanzar Tauri dev + backend por rol; retirar env vars Qt en F3),
-[`project/installer/build.ps1`](../../installer/build.ps1) + `The Watcher.spec` (sidecar + bundler
-Tauri), `project/requirements.txt` (purgar `PySide6*`/`shiboken6` en F3).
+**Reescritos sin Qt (F3):** `project/app/adapters/ws/request_server.py` y `request_client.py`
+(de `QWebSocketServer`/`QWebSocket` a `websockets` + asyncio-en-hilo, mismo protocolo de wire —
+IT↔Supervisor siguen interoperando); `project/app/infrastructure/logging_setup.py` (sink Qt →
+evento de bus `LogMessage`); `project/app/runtime/mode.py` (sin flag → `--daemon` para Operador,
+`--sidecar` para el resto; ya no existe modo QML).
 
-**Se crean:** `project/app/core/api/` (Facade+DTOs+bus), `project/app/adapters/ipc/` (canal local),
-`src-tauri/` (proyecto Tauri), frontend React (`src/`, tema desde `Tokens.qml`, componentes desde los
-`W*`).
+**Modificados:** `project/app/main.py` (cirugía completa — sin bootstrap PySide6, sin bloque QML,
+wiring de requests/fallos/callbacks compartido antes de la rama daemon/sidecar),
+[`project/run.ps1`](../../run.ps1) y [`project/run_dev.ps1`](../../run_dev.ps1) (Tauri por defecto,
+backend por rol, sin env vars Qt), [`project/installer/build.ps1`](../../installer/build.ps1) +
+`The Watcher.spec` (bundle headless-only, sin PySide6), `project/requirements.txt` (purgado
+`PySide6*`/`shiboken6`, añadido `websockets`).
+
+**Se crean (F2):** `project/app/core/api/` (Facade+DTOs+bus), `project/app/adapters/ipc/` (canal
+local), `src-tauri/` (protocolo custom `watcher://`, tray, single-instance, política de cierre),
+frontend React completo (`src/features/*`, `src/shell/*`, `src/components/W*`).
 
 **Se reusa intacto:** `project/app/core/**`,
 `adapters/{ffmpeg,filesystem,cloud,storage,monitor,native}/**`, el scheduled-task watchdog, y como
@@ -132,7 +141,14 @@ semilla de Track R: `project/native/watcher_segments/` (hoy scaffold, `ENGINE_RE
   - ✅ Seguridad (ADR-0011): SDDL scoped al usuario, sin puerto TCP.
   - ➖ **Sign-off en máquina real (riesgo aceptado por el owner, 2026-07-04):** (1) arranque interactivo de la UI QML por rol y (2) build congelado `installer/build.ps1` con pywin32 — no ejecutados en CI; se validan en el despliegue.
   - Entregado: `core/api/` (EventBus thread-safe, DTOs Pydantic, facades Recording/Settings/Editor/Clips/Requests/Delivery, bootstrap), `adapters/ipc/` (named pipe + SDDL + router + audit), `adapters/filesystem/file_browser_adapter.py`, `runtime/` (mode + headless daemon/sidecar + build_recording_backend). Los 3 bridges QML delegan a las facades (coexistencia dual-path); `main.py` cablea un `ApiLayer` compartido y despacha `--daemon`/`--sidecar`.
-- F3 (aceptación): matar la ventana → grabación de Operador **continúa**; cerrar app IT/Supervisor → **sin** proceso huérfano; export de reel frame-exact idéntico al QML; bundle medido vs 259 MB.
+- **F2/F3 (✅ cerradas 2026-07-06):**
+  - ✅ Auditoría de paridad IPC: los 43 comandos que invoca el frontend existen en `router.py`, y los 43 comandos del router se consumen — sin huérfanos en ninguna dirección. Los 24 eventos de `dto.py` están declarados en `BackendEventMap` del frontend.
+  - ✅ `pytest` verde — 481 passed, 10 skipped; cero referencias a `PySide6`/`adapters.ui` en `project/app` y `project/tests`.
+  - ✅ `cargo check` limpio + 5 tests unitarios Rust (protocolo custom, allowlist de rutas).
+  - ✅ `npm run build` (tsc + vite) y `npx vitest run` (41 tests) verdes.
+  - ✅ Bug real encontrado y corregido: `ClipRequestServer.stop()` colgaba 5s por una carrera entre `loop.stop()` y `run_coroutine_threadsafe` (ver `adapters/ws/request_server.py`).
+  - ➖ **Descoped (documentado, no bloqueante):** gestión de puerto WS de IT desde Settings (`open_it_ws_port` + hosts — el DTO existe, sin resto de comandos), telemetría real de `HealthBadge` (CPU/DISK/FPS siguen simulados, igual que QML). Empaquetado del instalador Tauri (bundlear el backend como `externalBin`) es fase posterior — alcance de esta migración fue "solo dev + purga".
+  - Aceptación (pendiente de validar en hardware real, no ejecutable en este entorno): matar la ventana → grabación de Operador **continúa** (daemon decoupled); cerrar app IT/Supervisor → **sin** proceso huérfano (sidecar vía stdin); export de reel server-side idéntico al QML (TD-7: sin scrub frame-exact desde `<video>`); preview en vivo por protocolo custom (TD-5: nunca por invoke JSON); fallback HEVC→H.264 on-demand (TD-1).
 
 ## Relacionado
 - [Explicación — Por qué migrar](explanation-tauri-migration.md)

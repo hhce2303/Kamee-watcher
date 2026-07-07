@@ -8,7 +8,7 @@ import SettingsView from "../features/settings/SettingsView";
 import { useAppStore } from "../stores/appStore";
 import TabBar from "./TabBar";
 import Statusbar from "./Statusbar";
-import NotificationStrip from "./NotificationStrip";
+import LogDrawer from "./LogDrawer";
 import HealthBadge from "./HealthBadge";
 import WindowControls from "./WindowControls";
 
@@ -27,7 +27,6 @@ export default function AppShell() {
           <WindowControls policy={policy} />
         </div>
       </div>
-      <NotificationStrip />
       <main className="tab-content">
         {activeTab === 0 && <RecordingView />}
         {activeTab === 1 && (role === "supervisor" ? <SupervisorView /> : <ClipsView />)}
@@ -35,6 +34,9 @@ export default function AppShell() {
         {activeTab === 3 && <SettingsView />}
         {activeTab === 4 && <AnalyticsTab />}
       </main>
+      {/* Absolutely positioned (see .log-drawer in App.css) — never shares layout flow with
+          .tab-content, so it can never push the tabs or content around. */}
+      <LogDrawer />
       <Statusbar />
     </div>
   );

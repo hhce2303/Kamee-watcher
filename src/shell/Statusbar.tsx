@@ -1,5 +1,6 @@
 import { useRecording } from "../hooks/useRecording";
 import { useAppStore } from "../stores/appStore";
+import LogTicker from "./LogTicker";
 
 function fmtTime(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
@@ -51,7 +52,10 @@ export default function Statusbar() {
       <div style={dividerStyle} />
       <span style={cellStyle}>{clipsDir}</span>
 
-      <div style={{ flex: 1 }} />
+      <div style={dividerStyle} />
+      <div className="log-ticker-slot">
+        <LogTicker />
+      </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span

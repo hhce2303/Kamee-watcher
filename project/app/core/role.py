@@ -128,7 +128,10 @@ def _setup_operator_launcher(autostart_module, scheduled_task_module) -> str:
                 return "task"
         except Exception:  # noqa: BLE001 — registration must never crash startup
             logger.exception("enforce_role: scheduled task registration failed.")
-    autostart_module.set_autostart(True)
+    # Always the operator (this function's only caller path) — pass --daemon
+    # explicitly so a login-triggered launch never falls into resolve_mode()'s
+    # QML fallback, and never silently headless-launches a role it isn't (C4).
+    autostart_module.set_autostart(True, launch_args=["--daemon"])
     logger.warning(
         "Operator restart watchdog degraded: scheduled task unavailable — "
         "using HKCU Run-key fallback (login autostart only, no restart after a kill)."

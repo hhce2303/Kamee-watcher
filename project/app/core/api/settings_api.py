@@ -20,7 +20,7 @@ from app.core.api.events import EventBus
 from app.core.ports.audit_port import AuditPort
 from app.core.ports.user_config_port import UserConfigPort
 from app.core.policy import policy_for
-from app.core.role import VALID_ROLES, default_autorecord_for_role
+from app.core.role import OPERATOR, VALID_ROLES, default_autorecord_for_role
 from app.infrastructure import autostart
 
 _DRIVERS = ["auto", "nvidia", "intel", "amd", "cpu"]
@@ -131,7 +131,12 @@ class SettingsApi:
             self._autorecord_cb(cmd.enabled)
 
     def set_autostart(self, cmd: dto.SetAutostart) -> None:
-        autostart.set_autostart(cmd.enabled)
+        # Pass the mode flag this role should launch with at login — resolve_mode()'s
+        # bare-argv fallback now defaults to daemon for any configured role (C4),
+        # so a Run-key entry with no flag would headless-launch IT/Supervisor
+        # instead of giving them their UI back.
+        launch_args = ["--daemon"] if self._role == OPERATOR else ["--sidecar"]
+        autostart.set_autostart(cmd.enabled, launch_args=launch_args)
 
     def apply_encoder_now(self) -> None:
         """Restart the live recording with the currently persisted codec/driver."""

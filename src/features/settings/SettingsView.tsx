@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import WSettingsRow from "../../components/WSettingsRow";
 import WToggle from "../../components/WToggle";
@@ -6,6 +5,7 @@ import WDropdown from "../../components/WDropdown";
 import WSeg from "../../components/WSeg";
 import WPathInput from "../../components/WPathInput";
 import WHotkey from "../../components/WHotkey";
+import PinUnlockPrompt from "../../components/PinUnlockPrompt";
 import { useSettingsForm, DRIVERS } from "../../hooks/useSettingsForm";
 import { policyFor } from "../../lib/policy";
 
@@ -28,19 +28,11 @@ const HOTKEYS = [
  */
 export default function SettingsView() {
   const { settings, restartState, restartError, actions } = useSettingsForm();
-  const [pin, setPin] = useState("");
-  const [pinError, setPinError] = useState<string | null>(null);
 
   if (!settings) return null;
 
   const policy = policyFor(settings.role);
   const canChangeRole = policy.canChangeRole || settings.it_unlocked;
-
-  async function handleUnlock() {
-    const ok = await actions.unlockIt(pin);
-    setPinError(ok ? null : "PIN incorrecto");
-    if (ok) setPin("");
-  }
 
   return (
     <div style={{ maxWidth: 640, display: "flex", flexDirection: "column" }}>
@@ -115,21 +107,9 @@ export default function SettingsView() {
             onSelect={actions.setRole}
           />
         ) : (
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              type="password"
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-              placeholder="PIN IT"
-              style={{ width: 100, height: 32, padding: "0 10px", borderRadius: "var(--r-sm)", border: "1px solid var(--border-base)", background: "var(--bg-base)", color: "var(--text-primary)" }}
-            />
-            <button type="button" onClick={handleUnlock} style={applyBtnStyle("idle")}>
-              Desbloquear
-            </button>
-          </div>
+          <PinUnlockPrompt onUnlock={actions.unlockIt} />
         )}
       </WSettingsRow>
-      {pinError && <p style={{ color: "var(--accent-record)", fontSize: 12, marginTop: -8 }}>{pinError}</p>}
 
       {settings.role === "it" && <ItWsPortNotice />}
     </div>

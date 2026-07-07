@@ -3,12 +3,14 @@
 Documentación completa de la transición de la UI de The Watcher desde **PySide6/QML** a
 **Tauri 2.0 + React**, con el core Python como sidecar ahora y destino **hexágono Rust** vía PyO3.
 
-> **Estado (2026-07-04):** **F0 GO** · **F1 cerrada** (backend headless implementado en la rama
-> `feat/f1-backend-headless`: `core/api` Facade+DTOs+bus, `adapters/ipc` named pipe autenticado,
-> arranque por rol daemon/sidecar; los 3 bridges QML delegan a las facades sin regresión; suite
-> 428 passed). QML sigue siendo la UI activa (se elimina en F3). El sign-off de F1 en máquina real
-> (arranque QML por rol + build congelado) es **riesgo aceptado por el owner**. **Siguiente: F2**
-> (UI React a paridad). Detalle del gate F1 en [Referencia — Arquitectura objetivo](reference-target-architecture.md#verificación-por-fase).
+> **Estado (2026-07-06):** **F0 GO** · **F1 cerrada** · **F2 cerrada** (paridad completa React:
+> shell por rol, Grabación con preview en vivo, Clips + player con fallback HEVC, Settings,
+> Supervisor + requests + NAS + OneDrive, MiniMode, editor de video + dashboard IT) ·
+> **F3 cerrada** (QML/PySide6 eliminados por completo — `adapters/ui/` y `prototype/` borrados,
+> WS de requests portado a `websockets` puro, `run.ps1`/`run_dev.ps1` arrancan Tauri por defecto).
+> El core/`adapters/ipc` quedan como único puerto de entrada; empaquetado del instalador Tauri
+> (bundlear el backend como `externalBin`) queda como fase siguiente. Detalle del gate F1 en
+> [Referencia — Arquitectura objetivo](reference-target-architecture.md#verificación-por-fase).
 > Origen: revisión `/office-hours` → `/plan-eng-review`.
 
 ## Índice (Diataxis)

@@ -180,12 +180,14 @@ def test_get_timeline_via_ipc() -> None:
 def test_set_autostart_via_ipc(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        "app.core.api.settings_api.autostart.set_autostart", calls.append
+        "app.core.api.settings_api.autostart.set_autostart",
+        lambda enabled, launch_args=None: calls.append((enabled, launch_args)),
     )
     router = IpcRouter(_layer())
     resp = router.handle({"id": "12", "cmd": "set_autostart", "payload": {"enabled": True}})
     assert resp["ok"] is True
-    assert calls == [True]
+    # _layer()'s role is "it" — sidecar/UI launch, never headless (C4/ADR-0010).
+    assert calls == [(True, ["--sidecar"])]
 
 
 def test_apply_encoder_now_via_ipc_no_callback() -> None:

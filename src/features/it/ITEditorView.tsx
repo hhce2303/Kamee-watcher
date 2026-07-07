@@ -3,12 +3,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../stores/appStore";
 import { useInboxRequests } from "../../hooks/useInboxRequests";
 import { useEditorTimeline } from "../../hooks/useEditorTimeline";
+import { useSettingsForm } from "../../hooks/useSettingsForm";
 import ClipBrowser from "../clips/ClipBrowser";
 import VideoEditorView from "../editor/VideoEditorView";
 import OutputPanel from "../delivery/OutputPanel";
 import RecordingView from "../recording/RecordingView";
 import SettingsView from "../settings/SettingsView";
 import ITInboxPanel from "./ITInboxPanel";
+import { ITHealthChips } from "../../shell/HealthChips";
+import PinUnlockPrompt from "../../components/PinUnlockPrompt";
 import type { ClipRequest } from "../../types/dto";
 
 type View = "cola" | "editor" | "grabacion" | "entregas" | "ajustes";
@@ -28,7 +31,7 @@ const NAV: { id: View; label: string; icon: string }[] = [
 export default function ITEditorView() {
   const [view, setView] = useState<View>("cola");
   const [now, setNow] = useState(() => new Date());
-  const ipcConnected = useAppStore((s) => s.ipcConnected);
+  const itUnlocked = useAppStore((s) => s.settings?.it_unlocked ?? false);
   const { requests, setStatus } = useInboxRequests();
   const editor = useEditorTimeline();
 
@@ -59,7 +62,7 @@ export default function ITEditorView() {
         <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
           {now.toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" })} · {now.toLocaleTimeString("es-MX")}
         </span>
-        <span style={{ width: 5, height: 5, borderRadius: 3, background: ipcConnected ? "var(--accent-ok)" : "var(--accent-record)" }} />
+        <ITHealthChips />
       </header>
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -119,9 +122,19 @@ export default function ITEditorView() {
 
           {view === "entregas" && <DeliveredList requests={requests.filter((r) => r.status === "done")} />}
 
-          {view === "ajustes" && <SettingsView />}
+          {view === "ajustes" && (itUnlocked ? <SettingsView /> : <AjustesPinGate />)}
         </main>
       </div>
+    </div>
+  );
+}
+
+function AjustesPinGate() {
+  const { actions } = useSettingsForm();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 320 }}>
+      <p style={{ color: "var(--text-muted)", fontSize: 14 }}>Ingresa el PIN de IT para acceder a ajustes.</p>
+      <PinUnlockPrompt onUnlock={actions.unlockIt} />
     </div>
   );
 }

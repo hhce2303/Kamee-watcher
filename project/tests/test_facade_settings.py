@@ -72,6 +72,23 @@ def test_first_run_can_set_role_and_relaunches() -> None:
     assert ("setRole", "ui", "→operator", True) == audit.entries[-1]
 
 
+def test_first_run_set_role_initializes_autorecord_default() -> None:
+    # First-run IT → autorecord off (opt-in); first-run operator → on;
+    # first-run supervisor → off. Ported from the deleted Qt SettingsBridge
+    # PIN tests (test_role.py::TestSettingsBridgePin).
+    for role, expected in ((IT, False), (OPERATOR, True), (SUPERVISOR, False)):
+        bus, ucp, api = _make(role="", relaunch=lambda: None)
+        api.set_role(dto.SetRole(role=role))
+        assert ucp.load().autorecord is expected
+
+
+def test_set_role_no_relaunch_when_unchanged() -> None:
+    calls = []
+    bus, ucp, api = _make(role=IT, relaunch=lambda: calls.append(True))
+    assert api.set_role(dto.SetRole(role=IT)) is True
+    assert calls == []  # no relaunch — role didn't actually change
+
+
 def test_supervisor_cannot_change_role_without_unlock() -> None:
     audit = FakeAudit()
     bus, ucp, api = _make(role=SUPERVISOR, audit=audit)
@@ -161,11 +178,24 @@ def test_get_media_roots() -> None:
 def test_set_autostart_delegates_to_infrastructure(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        "app.core.api.settings_api.autostart.set_autostart", calls.append
+        "app.core.api.settings_api.autostart.set_autostart",
+        lambda enabled, launch_args=None: calls.append((enabled, launch_args)),
     )
     bus, ucp, api = _make(role=IT)
     api.set_autostart(dto.SetAutostart(enabled=True))
-    assert calls == [True]
+    # IT logs in to its sidecar/UI, never headless — C4/ADR-0010.
+    assert calls == [(True, ["--sidecar"])]
+
+
+def test_set_autostart_uses_daemon_flag_for_operator(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "app.core.api.settings_api.autostart.set_autostart",
+        lambda enabled, launch_args=None: calls.append((enabled, launch_args)),
+    )
+    bus, ucp, api = _make(role=OPERATOR)
+    api.set_autostart(dto.SetAutostart(enabled=True))
+    assert calls == [(True, ["--daemon"])]
 
 
 def test_apply_encoder_now_no_callback_publishes_failed() -> None:

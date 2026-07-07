@@ -15,7 +15,7 @@ const LOCATIONS = (nasRoot: string) => [
 /** Folder navigation for the Clips tab — port of qml/ClipBrowser.qml. */
 export default function ClipBrowser({ onPlay }: ClipBrowserProps) {
   const b = useClipBrowser();
-  const roots = useMediaRoots();
+  const { roots } = useMediaRoots();
   const nasRoot = roots?.storage_roots[0] ?? "";
   const currentRoot = b.navStack[0]?.path;
 

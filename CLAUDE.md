@@ -31,11 +31,11 @@ deuda técnica y buenas prácticas: [`project/docs/migration/tech-debt-and-best-
 **Roadmap por fases (orden estricto):**
 | Fase | Qué | Gate/nota |
 |------|-----|-----------|
-| **F0** | GO/NO-GO **bloqueante**: 6 spikes en máquina real de operador | Sin GO no hay F1 |
-| **F1** | Backend headless: `core/api`, `adapters/ipc`, arranque por rol; QML sigue vivo | pytest verde |
-| **F2** | UI React a paridad, vista por vista (editor = 40-60%, al final); F2a-d + buffer | por vista |
-| **F3** | Cutover por cohorte + **eliminación total de QML/PySide6** + packaging Tauri | rollback def. |
-| **Track R** | Hexágono Rust port-por-port (PyO3), post-cutover | flag `ENGINE_READY` |
+| **F0** | GO/NO-GO **bloqueante**: 6 spikes en máquina real de operador | ✅ GO |
+| **F1** | Backend headless: `core/api`, `adapters/ipc`, arranque por rol; QML sigue vivo | ✅ cerrada (pytest verde) |
+| **F2** | UI React a paridad completa por rol (incluye editor); F2a-d + buffer | ✅ cerrada 2026-07-06 |
+| **F3** | **Eliminación total de QML/PySide6** (`adapters/ui/` + `prototype/` borrados) + `run.ps1`/`run_dev.ps1` → Tauri | ✅ cerrada 2026-07-06 — packaging del instalador Tauri (`externalBin`) queda como fase posterior |
+| **Track R** | Hexágono Rust port-por-port (PyO3), post-cutover | ✅ primer port live: motor de segmentos (`ENGINE_READY=true`) |
 
 **Tecnologías + buenas prácticas (cheat-sheet; detalle en el doc de deuda técnica):**
 - **HEVC en WebView2 es HW-dependiente, sin fallback SW** (ruta Edge/MFT) → editor/player pueden romper en la flota → **transcode a H.264** (TD-1). Es el bloqueador #1 del gate F0.

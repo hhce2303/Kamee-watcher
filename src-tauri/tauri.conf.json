@@ -41,15 +41,7 @@
   },
   "plugins": {
     "shell": {
-      "open": false,
-      "sidecar": true,
-      "scope": [
-        {
-          "name": "python-sidecar",
-          "sidecar": true,
-          "args": true
-        }
-      ]
+      "open": false
     }
   },
   "bundle": {

@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { useRequests } from "../../hooks/useRequests";
+import { useStorages } from "../../hooks/useStorages";
 import OutputPanel from "../delivery/OutputPanel";
+import OperatorAvatar from "../../shell/OperatorAvatar";
 import type { ClipRequest, OperatorInfo } from "../../types/dto";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -32,14 +34,18 @@ function fmtDate(d: Date): string {
  */
 export default function SupervisorView() {
   const { operators, myRequests, sending, send } = useRequests();
+  const storages = useStorages();
   const [search, setSearch] = useState("");
+  const [storageFilter, setStorageFilter] = useState<string | null>(null);
   const [selected, setSelected] = useState<OperatorInfo | null>(null);
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [description, setDescription] = useState("");
   const [feedback, setFeedback] = useState<"ok" | "error" | null>(null);
 
-  const filtered = operators.filter((op) => op.name.toLowerCase().includes(search.toLowerCase()));
+  const filtered = operators.filter(
+    (op) => op.name.toLowerCase().includes(search.toLowerCase()) && (!storageFilter || op.storage === storageFilter),
+  );
 
   function selectOperator(op: OperatorInfo) {
     setSelected(op);
@@ -80,13 +86,19 @@ export default function SupervisorView() {
             {operators.length}
           </span>
         </div>
-        <div style={{ padding: 8, borderBottom: "1px solid var(--border-base)" }}>
+        <div style={{ padding: 8, borderBottom: "1px solid var(--border-base)", display: "flex", flexDirection: "column", gap: 8 }}>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar operador…"
             style={{ width: "100%", height: 32, padding: "0 10px", borderRadius: "var(--r-xs)", border: "1px solid var(--border-base)", background: "var(--bg-base)", color: "var(--text-primary)" }}
           />
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <StorageChip label="Todas" active={storageFilter === null} onClick={() => setStorageFilter(null)} />
+            {storages.map((s) => (
+              <StorageChip key={s.name} label={s.name} active={storageFilter === s.name} onClick={() => setStorageFilter(s.name)} />
+            ))}
+          </div>
         </div>
         <div style={{ flex: 1, overflow: "auto", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, padding: 10, alignContent: "start" }}>
           {filtered.map((op) => (
@@ -159,6 +171,27 @@ export default function SupervisorView() {
   );
 }
 
+function StorageChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        height: 24,
+        padding: "0 10px",
+        borderRadius: 12,
+        border: `1px solid ${active ? "var(--accent-primary)" : "var(--border-base)"}`,
+        background: active ? "var(--primary-dim)" : "transparent",
+        color: active ? "var(--accent-primary)" : "var(--text-muted)",
+        fontSize: 12,
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 function OperatorCard({ operator, selected, onClick }: { operator: OperatorInfo; selected: boolean; onClick: () => void }) {
   const initials = operator.name.match(/[-_ ](\w+)$/)?.[1] ?? operator.name.slice(0, 2).toUpperCase();
   return (
@@ -180,9 +213,7 @@ function OperatorCard({ operator, selected, onClick }: { operator: OperatorInfo;
       }}
     >
       {selected && <span style={{ position: "absolute", top: 6, right: 6, width: 16, height: 16, borderRadius: 8, background: "var(--accent-primary)", color: "var(--bg-base)", fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center" }}>✓</span>}
-      <span style={{ width: 38, height: 38, borderRadius: "var(--r-sm)", background: selected ? "rgba(56,189,248,0.22)" : "rgba(129,140,248,0.10)", display: "flex", alignItems: "center", justifyContent: "center", color: selected ? "var(--accent-primary)" : "var(--accent-monitor)", fontFamily: "var(--font-mono)", fontWeight: 700 }}>
-        {initials}
-      </span>
+      <OperatorAvatar initials={initials} tone={selected ? "var(--accent-primary)" : "var(--accent-monitor)"} size={38} />
       <span style={{ color: selected ? "var(--text-primary)" : "var(--text-muted)", fontSize: 12, fontWeight: selected ? 600 : 400 }}>{operator.name}</span>
       <span style={{ padding: "0 4px", borderRadius: 3, border: "1px solid var(--border-subtle)", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 10 }}>{operator.storage}</span>
     </button>

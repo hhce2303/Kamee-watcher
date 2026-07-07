@@ -8,7 +8,10 @@ describe("appStore", () => {
       ipcConnected: false,
       settings: null,
       policy: useAppStore.getState().policy,
-      notifications: [],
+      logs: [],
+      unreadCount: 0,
+      drawerOpen: false,
+      lastError: null,
       activeTab: 0,
     });
   });
@@ -74,23 +77,35 @@ describe("appStore", () => {
     errorSpy.mockRestore();
   });
 
-  it("log_message and recording_failed push notifications", () => {
+  it("log_message and recording_failed push into log history, newest first", () => {
     invoke.mockImplementation(async () => undefined);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const cleanup = initAppStore();
     emitFake("log_message", { event: "log_message", message: "hello" });
     emitFake("recording_failed", { event: "recording_failed", message: "ffmpeg died" });
 
-    const notes = useAppStore.getState().notifications;
-    expect(notes.map((n) => n.message)).toEqual(["hello", "ffmpeg died"]);
-    expect(notes[1].level).toBe("error");
+    const logs = useAppStore.getState().logs;
+    expect(logs.map((n) => n.message)).toEqual(["ffmpeg died", "hello"]);
+    expect(logs[0].level).toBe("error");
+    expect(useAppStore.getState().unreadCount).toBe(2);
+    expect(useAppStore.getState().lastError?.message).toBe("ffmpeg died");
     cleanup();
     errorSpy.mockRestore();
   });
 
-  it("dismissNotification removes by id", () => {
-    useAppStore.setState({ notifications: [{ id: 1, message: "a", level: "info" }] });
-    useAppStore.getState().dismissNotification(1);
-    expect(useAppStore.getState().notifications).toEqual([]);
+  it("toggleLogDrawer opens the drawer, clears unread count and the pinned error", () => {
+    useAppStore.setState({
+      logs: [{ id: 1, message: "boom", level: "error", ts: 0 }],
+      unreadCount: 3,
+      lastError: { id: 1, message: "boom", level: "error", ts: 0 },
+      drawerOpen: false,
+    });
+    useAppStore.getState().toggleLogDrawer();
+    expect(useAppStore.getState().drawerOpen).toBe(true);
+    expect(useAppStore.getState().unreadCount).toBe(0);
+    expect(useAppStore.getState().lastError).toBeNull();
+
+    useAppStore.getState().toggleLogDrawer();
+    expect(useAppStore.getState().drawerOpen).toBe(false);
   });
 });
