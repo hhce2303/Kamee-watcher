@@ -20,6 +20,7 @@ from app.core.api import dto
 from app.core.api.events import EventBus
 from app.core.monitor_detection.service import MonitorDetectionService
 from app.core.ports.audit_port import AuditPort
+from app.core.ports.preview_server_port import PreviewServerPort
 from app.core.ports.user_config_port import UserConfigPort
 from app.core.recording_service.models import MonitorInfo
 
@@ -36,6 +37,7 @@ class RecordingApi:
         event_service=None,       # EventService | None
         user_config_port: Optional[UserConfigPort] = None,
         audit_port: Optional[AuditPort] = None,
+        preview_server: Optional[PreviewServerPort] = None,
     ) -> None:
         self._bus = event_bus
         self._detection = detection_service
@@ -43,6 +45,7 @@ class RecordingApi:
         self._events = event_service
         self._user_config_port = user_config_port
         self._audit = audit_port
+        self._preview_server = preview_server
 
         self._all_monitors: List[MonitorInfo] = detection_service.get_monitors()
         self._selected: set[str] = self._load_selection()
@@ -73,6 +76,18 @@ class RecordingApi:
             dto.MonitorDTO.from_monitor(m, selected=m.fingerprint in self._selected)
             for m in self._all_monitors
         ]
+
+    def get_preview_server_info(self) -> Optional[dto.PreviewServerInfo]:
+        """Return preview server info when the operator HTTP server is running."""
+        if self._preview_server is None or not self._preview_server.is_running:
+            return None
+        return dto.PreviewServerInfo(
+            base_url=self._preview_server.base_url,
+            stream_url_template=(
+                f"{self._preview_server.base_url}/stream/m{{index}}"
+            ),
+            active=True,
+        )
 
     # ── Commands ──────────────────────────────────────────────────────
 

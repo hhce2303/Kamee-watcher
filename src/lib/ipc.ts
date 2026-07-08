@@ -11,6 +11,7 @@ import type {
   MediaRoots,
   MonitorDTO,
   OperatorInfo,
+  PreviewServerInfo,
   RecordingState,
   SettingsSnapshot,
   ShareResultDTO,
@@ -56,6 +57,8 @@ export interface AddFilesReport {
 
 export const getRecordingState = () => ipcSend<RecordingState>("get_recording_state");
 export const getMonitors = () => ipcSend<MonitorDTO[]>("get_monitors");
+export const getPreviewServerInfo = () =>
+  ipcSend<PreviewServerInfo | null>("get_preview_server_info");
 export const triggerEvent = () => ipcSend<{ accepted: boolean }>("trigger_event");
 export const startRecording = () => ipcSend<RecordingState>("start_recording");
 export const stopRecording = () => ipcSend<RecordingState>("stop_recording");

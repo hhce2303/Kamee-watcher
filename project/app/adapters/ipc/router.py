@@ -81,6 +81,7 @@ class IpcRouter:
             # ── Recording (audited: start/stop) ──
             "get_recording_state": lambda p: r.get_recording_state(),
             "get_monitors":        lambda p: r.get_monitors(),
+            "get_preview_server_info": lambda p: r.get_preview_server_info(),
             "trigger_event":       lambda p: {"accepted": r.trigger_event(dto.TriggerEvent(origin=o))},
             "start_recording":     lambda p: r.start_recording(dto.StartRecording(origin=o)),
             "stop_recording":      lambda p: r.stop_recording(dto.StopRecording(origin=o)),

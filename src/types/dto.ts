@@ -74,6 +74,12 @@ export interface MediaRoots {
   storage_roots: string[];
 }
 
+export interface PreviewServerInfo {
+  base_url: string;
+  stream_url_template: string;
+  active: boolean;
+}
+
 // ── Browsing / requests (dataclasses serialised by router._ser) ─────
 
 export interface BrowseEntry {

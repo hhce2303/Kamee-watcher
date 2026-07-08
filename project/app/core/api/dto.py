@@ -133,6 +133,16 @@ class MediaRoots(BaseModel):
     storage_roots: list[str] = []
 
 
+class PreviewServerInfo(BaseModel):
+    """Info about the operator-only localhost MJPEG preview server."""
+
+    model_config = ConfigDict(frozen=True)
+
+    base_url: str
+    stream_url_template: str  # e.g. "http://127.0.0.1:8787/stream/m{index}"
+    active: bool
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Command DTOs  (UI → facade).  Grouped by which bridge they came from.
 # ══════════════════════════════════════════════════════════════════════

@@ -29,6 +29,7 @@ from app.core.ports.clip_inspector_port import ClipInspectorPort
 from app.core.ports.editor_export_port import EditorExportPort
 from app.core.ports.file_browser_port import FileBrowserPort
 from app.core.ports.mp4_converter_port import Mp4ConverterPort
+from app.core.ports.preview_server_port import PreviewServerPort
 from app.core.ports.user_config_port import UserConfigPort
 
 
@@ -44,6 +45,7 @@ class ApiLayer:
     requests: RequestsApi
     delivery: DeliveryApi
     analytics: Optional[AnalyticsQueryPort] = None
+    preview_server: Optional[PreviewServerPort] = None
 
     def start(self) -> None:
         self.bus.start()
@@ -72,6 +74,7 @@ def build_api_layer(
     relaunch_cb: Optional[Callable[[], None]] = None,
     autorecord_cb: Optional[Callable[[bool], None]] = None,
     analytics_query: Optional[AnalyticsQueryPort] = None,
+    preview_server: Optional[PreviewServerPort] = None,
     start_bus: bool = False,
 ) -> ApiLayer:
     """Assemble the EventBus + all facades over the given services.
@@ -90,6 +93,7 @@ def build_api_layer(
             event_service=event_service,
             user_config_port=user_config_port,
             audit_port=audit_port,
+            preview_server=preview_server,
         ),
         settings=SettingsApi(
             event_bus=bus,

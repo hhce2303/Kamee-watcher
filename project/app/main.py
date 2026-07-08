@@ -55,6 +55,7 @@ from app.adapters.monitor.screeninfo_adapter import ScreeninfoMonitorAdapter
 from app.adapters.filesystem.request_adapter import JsonRequestAdapter
 from app.adapters.ws.request_server import ClipRequestServer
 from app.adapters.ws.request_client import ClipRequestClient
+from app.adapters.preview_server.mjpeg_server_adapter import MjpegPreviewServerAdapter
 from app.core.recording_service.supervisor import RecorderSupervisor
 from app.core.disk_monitor import DiskSpaceMonitor
 from app.core.monitor_detection.service import MonitorDetectionService
@@ -290,6 +291,15 @@ def main() -> None:
     # custom protocol (src-tauri) — the frontend polls at ~2 fps (TD-5: never
     # over JSON invoke). Nothing in this process needs to forward the paths.
 
+    # ── Operator-only localhost MJPEG preview server ───────────────────
+    # Starts an HTTP server on 127.0.0.1:{PREVIEW_HTTP_PORT} so any browser
+    # on the operator PC can open a live MJPEG feed without Tauri.
+    # Non-recording roles (Supervisor/IT/unconfigured) never start this.
+    _preview_server = None
+    if user_config.role == OPERATOR:
+        _preview_server = MjpegPreviewServerAdapter(settings)
+        _preview_server.start()
+
     # ── Start recording ───────────────────────────────────────────────
     # Operator always records; IT only if its autorecord toggle is on;
     # supervisor / unconfigured never start here (and have no stack anyway).
@@ -380,6 +390,7 @@ def main() -> None:
         slc_storage_host=settings.slc_storage_host,
         onedrive_base_folder=settings.onedrive_base_folder,
         analytics_query=backend.analytics,
+        preview_server=_preview_server,
     )
     api.start()
     set_event_bus(api.bus)  # logs → LogMessage bus event (C3), replaces the Qt log panel sink
@@ -487,6 +498,8 @@ def main() -> None:
             _req_server.stop()
         if _req_client is not None:
             _req_client.stop()
+        if _preview_server is not None:
+            _preview_server.stop()
 
     # ── Role-conditional topology (ADR-0010): headless daemon / sidecar ──
     # Operator = --daemon (decoupled, survives the Tauri window closing);

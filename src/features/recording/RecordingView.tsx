@@ -8,6 +8,8 @@ import MarkEventButton from "./MarkEventButton";
 import PreRollOverlay from "./PreRollOverlay";
 import AnnotationModal from "./AnnotationModal";
 import ITInboxPanel from "../it/ITInboxPanel";
+import { getPreviewServerInfo } from "../../lib/ipc";
+import type { PreviewServerInfo } from "../../types/dto";
 
 type Flow = "idle" | "preroll" | "annotate";
 
@@ -26,6 +28,14 @@ export default function RecordingView() {
   const [markers, setMarkers] = useState<EventMarker[]>([]);
   const [inboxOpen, setInboxOpen] = useState(false);
   const isIt = useAppStore((s) => s.settings?.role) === "it";
+  const isOperator = useAppStore((s) => s.settings?.role) === "operator";
+  const [previewServer, setPreviewServer] = useState<PreviewServerInfo | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!isOperator) return;
+    getPreviewServerInfo().then(setPreviewServer).catch(() => null);
+  }, [isOperator]);
 
   useEffect(() => {
     if (!isIt) return;
@@ -98,6 +108,45 @@ export default function RecordingView() {
         </div>
 
         {error && <p style={{ color: "var(--accent-record)", fontSize: 12 }}>{error}</p>}
+
+        {isOperator && previewServer?.active && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "var(--sp-3)",
+              padding: "6px 10px",
+              borderRadius: "var(--r-sm)",
+              background: "var(--bg-surface)",
+              border: "1px solid var(--border-base)",
+              fontSize: 12,
+              color: "var(--text-dim)",
+            }}
+          >
+            <span style={{ fontFamily: "monospace", color: "var(--text-base)" }}>
+              {previewServer.base_url}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(previewServer.stream_url_template.replace("{index}", "0"));
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+              style={{
+                padding: "2px 8px",
+                borderRadius: "var(--r-sm)",
+                border: "1px solid var(--border-base)",
+                background: "transparent",
+                color: "var(--accent-primary)",
+                fontSize: 11,
+                cursor: "pointer",
+              }}
+            >
+              {copied ? "Copiado" : "Copiar URL"}
+            </button>
+          </div>
+        )}
 
         <div
           style={{
