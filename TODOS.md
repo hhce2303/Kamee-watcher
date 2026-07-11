@@ -6,9 +6,10 @@ All three were consciously deferred to keep this PR right-sized; each has a clea
 trigger to pick it up.
 
 ### 1. Hang / liveness detection for the operator process
-- **What:** Detect and recover a *hung-but-alive* operator process (frozen Qt
-  loop) — add a heartbeat (the app writes a timestamp; a checker relaunches if
-  stale) or a watchdog execution-time-limit.
+- **What:** Detect and recover a *hung-but-alive* operator process (frozen main
+  loop — the operator process is now the headless Python daemon post-F1/F3, not
+  the old Qt event loop) — add a heartbeat (the app writes a timestamp; a
+  checker relaunches if stale) or a watchdog execution-time-limit.
 - **Why:** The current restart watchdog is a Windows Scheduled Task with
   *restart-on-failure*. It only fires when the process *exits* with a non-zero
   result (kill / crash). A process that is alive but wedged never exits, so the
@@ -25,30 +26,20 @@ trigger to pick it up.
 ### 2. Report degraded watchdog state to IT (remote)
 - **What:** When the scheduled-task registration fails (corporate group policy /
   permissions) and the app falls back to the HKCU Run key, push that degraded
-  state to IT over the existing request WebSocket / inbox — not just the local
-  tray tooltip.
+  state to IT over the existing request WebSocket / inbox — not just a log line.
 - **Why:** On a locked-down box the operator has no settings tab and may never
-  notice the tray tooltip. IT should know which stations lack restart-after-kill
+  see a log file. IT should know which stations lack restart-after-kill
   protection (fleet health).
 - **Pros:** IT visibility into degraded stations.
 - **Cons:** Couples a log/status concern to the WS/inbox plumbing for a rare case.
 - **Context:** `enforce_role` returns `"runkey"` in this case (see
-  `app/core/role.py`); `main.py` already surfaces it to the tray tooltip
-  (`app/adapters/ui/tray_icon.py`). The WS server/client live in `app/adapters/ws/`.
+  `app/core/role.py`). Post-F3, `main.py` only logs this
+  (`logger.info("Role: {} | watchdog: {}", ...)`) — the old Python tray tooltip
+  (`app/adapters/ui/tray_icon.py`) that used to surface it was removed with
+  QML/PySide6; the new Rust tray (`src-tauri/src/tray.rs`) does not yet surface
+  watchdog status either, so this is currently invisible outside the log file.
+  The WS server/client live in `app/adapters/ws/`.
 - **Depends on:** the request system (IT server / Supervisor client).
-
-### 3. Audit log for IT unlocks and role changes
-- **What:** Persist an audit trail (who / when / which machine) for IT-PIN
-  unlocks (`Ctrl+Alt+Shift+R`) and role changes (`setRole`).
-- **Why:** The IT PIN is the *sole* gate — anyone holding it can unlock on any
-  machine. For a security/monitoring tool, traceability of privilege use matters.
-- **Pros:** Accountability for a sensitive action.
-- **Cons:** Small logging + persistence cost; decide retention/location.
-- **Context:** `SettingsBridge.unlockIT` / `setRole`
-  (`app/adapters/ui/settings_bridge.py`) already log to Loguru; this would add a
-  dedicated, queryable audit channel. The threat model (PIN-as-sole-gate) is
-  documented inline in `setRole`.
-- **Depends on:** —
 
 ## Ship follow-ups — feat/f1-backend-headless → main (2026-07-10)
 Captured during `/ship` of the F1–F3 migration branch (backend headless, full
@@ -61,7 +52,7 @@ clear trigger to pick it up.
   distributable artifacts — the Tauri desktop shell (`src-tauri/`) and the
   native Rust segment engine (`project/native/watcher_segments`, built via
   `maturin`) — with no automated build/release pipeline for either.
-- **Why:** Already flagged in `project/CLAUDE.md` as a known remaining item
+- **Why:** Already flagged in `CLAUDE.md` (repo root) as a known remaining item
   ("Tauri prod installer packaging queda como fase posterior a F3"). Not a
   surprise, but worth a durable tracker now that the branch is landing.
 - **Pros:** Reproducible signed installers (MSI/NSIS via `tauri-action`),
@@ -154,3 +145,17 @@ clear trigger to pick it up.
 - **Context:** `project/tests/test_preview_server.py`,
   `project/app/adapters/preview_server/mjpeg_server_adapter.py:99-120`.
 - **Depends on:** —
+
+## Completed
+
+### Audit log for IT unlocks and role changes
+- **What:** Persist an audit trail (who / when / which machine) for IT-PIN
+  unlocks (`Ctrl+Alt+Shift+R`) and role changes (`setRole`).
+- **Why:** The IT PIN is the *sole* gate — anyone holding it can unlock on any
+  machine. For a security/monitoring tool, traceability of privilege use matters.
+- **Context:** Implemented as `AuditPort` (`app/core/ports/audit_port.py`,
+  ADR-0011) — `SettingsApi.set_role` / `SettingsApi.unlock_it`
+  (`app/core/api/settings_api.py`) call `_audit_cmd()` for every attempt
+  (success and failure), persisted via `sqlite_event_store.py`. Covered by
+  `project/tests/test_audit_store.py`.
+- **Completed:** v0.1.0 (2026-07-10)

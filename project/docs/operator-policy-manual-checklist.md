@@ -36,9 +36,12 @@ Build/run as the **operator** role (set role to operator, relaunch).
 
 ## Degraded fallback (locked-down box)
 - [ ] Simulate a Task Scheduler failure (deny task creation / GPO). On launch the
-      app falls back to the HKCU Run key, logs a loud warning, and the tray
-      tooltip shows the degraded "auto-reinicio limitado" message. Recording is
-      unaffected.
+      app falls back to the HKCU Run key and logs a loud warning
+      (`Role: {} | watchdog: runkey`). Recording is unaffected.
+      **Known gap (TODOS.md #2):** post-F3 this degraded state is only visible
+      in the log file — the old Python tray tooltip that used to surface it was
+      removed with QML/PySide6, and the new Rust tray (`src-tauri/src/tray.rs`)
+      does not yet show it either.
 
 ## Other roles (regression)
 - [ ] Supervisor: clips tab only, no recording, window closes/minimises normally,

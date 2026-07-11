@@ -67,6 +67,6 @@ proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
 | What | Where |
 |------|-------|
 | New FFmpeg-based adapter | `app/adapters/ffmpeg/{name}_adapter.py` |
-| New UI widget | `app/adapters/ui/{widget_name}.py` |
+| New IPC command | `app/adapters/ipc/router.py` (dispatch) + `core/api/{name}_api.py` (Facade) |
 | New port ABC | `app/core/ports/{domain}_port.py` |
 | Wiring new adapter | `app/main.py` only |
