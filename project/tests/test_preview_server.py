@@ -97,7 +97,8 @@ class TestSnapshotEndpoint:
         # Write a minimal valid JPEG-like payload (just header bytes).
         monitor_dir = tmp_path / "m0"
         monitor_dir.mkdir()
-        jpeg_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 20  # fake JPEG header
+        # _read_valid_jpeg() requires both SOI and EOI markers — must end in \xff\xd9.
+        jpeg_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 18 + b"\xff\xd9"
         (monitor_dir / "preview.jpg").write_bytes(jpeg_bytes)
 
         adapter = _make_adapter(tmp_path, port)
@@ -148,19 +149,28 @@ class TestMjpegStream:
         # Provide a real preview file so the loop sends at least one frame.
         monitor_dir = tmp_path / "m1"
         monitor_dir.mkdir()
-        (monitor_dir / "preview.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 10)
+        # _read_valid_jpeg() requires both SOI and EOI markers — must end in \xff\xd9.
+        (monitor_dir / "preview.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8 + b"\xff\xd9")
 
         adapter = _make_adapter(tmp_path, port)
         adapter.start()
         _wait_up(port)
         try:
             # Open the stream and read just enough to verify the MJPEG boundary.
+            # A recv() timeout is required: if the server ever again fails to
+            # emit a frame (e.g. a future _read_valid_jpeg regression), recv()
+            # would otherwise block forever with no way for the deadline loop
+            # below to interrupt it, hanging the whole test run.
             conn = socket.create_connection(("127.0.0.1", port))
+            conn.settimeout(0.2)
             conn.sendall(b"GET /stream/m1 HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
             raw = b""
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline and b"--frame" not in raw:
-                chunk = conn.recv(4096)
+                try:
+                    chunk = conn.recv(4096)
+                except socket.timeout:
+                    continue
                 if not chunk:
                     break
                 raw += chunk
