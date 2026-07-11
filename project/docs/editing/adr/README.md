@@ -21,5 +21,7 @@ cambia, se crea un ADR nuevo que la *supersede*.
 | [0013](ADR-0013-ddagrab-capture-cursor-flicker.md) | Captura por ddagrab (DXGI) para eliminar el titileo del cursor (realiza parcial 0007) | Aceptado |
 | [0014](ADR-0014-zerocopy-qsv-capture-pipeline.md) | Pipeline de captura zero-copy (D3D11→QSV/CUDA) tras ddagrab (PoC-1) | Aceptado |
 | [0015](ADR-0015-batch-ffmpeg-governance.md) | Gobernanza de FFmpeg batch: Job Object compartido + semáforo + telemetría (PoC-2) | Aceptado |
+| [0016](ADR-0016-recorder-supervision-ctypes-not-rust.md) | Supervisión del recorder: fix ctypes en vez de crate Rust (Track R2 M2-M4 diferidos) | Aceptado |
+| [0017](ADR-0017-adr0007-sla-verdict-confirmed.md) | Gate 0007 resuelto: CPU de captura confirmada dentro de SLA, Track R3 no se activa | Aceptado |
 
 ADR-0008..0012 son la migración de UI a Tauri 2.0 — ver [`docs/migration/`](../../migration/README.md).

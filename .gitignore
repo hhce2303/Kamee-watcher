@@ -47,6 +47,9 @@ Thumbs.db
 # Segments
 .segments/
 
+# Track R2 bench harness scratch output (project/tools/bench_recording.ps1)
+project/tools/bench_out/
+
 # OneDrive conflict copies (multi-PC sync) — e.g. setup_env-DESKTOP-P84Q52M.ps1
 *-DESKTOP-*
 

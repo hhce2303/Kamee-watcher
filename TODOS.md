@@ -148,6 +148,36 @@ clear trigger to pick it up.
 
 ## Completed
 
+### Track R2 — recorder supervision: ctypes orphan-fix, M1 clip-engine quick win, M5 hardening
+- **What:** Full-scope investigation of the Rust recorder-supervision migration plan
+  (`/plan-eng-review`'d 2026-07-11, branch `feat/f1-backend-headless`). Delivered: M0 (bench
+  harness + full-scale legacy/auto baseline, 3 real monitors), the ctypes orphan-fix (spawn
+  suspended → assign to Job → resume, closing the historical Popen-then-assign race in
+  `recorder_adapter.py`/`process_guard.py`), M1 (`allow_threads` GIL fix in the Rust
+  `compile_clip`, `CLIP_ENGINE` routing with automatic FFmpeg fallback), and M5 (`ClipBuilder`'s
+  0.5s sleep-poll replaced with a `threading.Condition`, plus the ADR-0007 SLA gate resolved).
+- **Why:** M2a's ctypes-vs-Rust spike (`project/tools/spike_m2a_ctypes_guard.py`) proved pure
+  ctypes closes the FFmpeg-orphan race just as well as the planned Rust crate (0/500 in a rapid
+  spawn+kill race test, a clean hard-kill/Job-reap test) — reusing structs already shipped in
+  `process_guard.py`. User decided to close the cycle there rather than spend 5+ more weeks on
+  the `watcher_recorder_guard` Rust crate (M2), its directory-watcher + parity harness (M3), and
+  the wire-in + 24h soak (M4) — all **deferred indefinitely**, so `RECORDER_GUARD` is never
+  introduced and there is no second supervision implementation to later remove (this is why the
+  original item #9 here, "remove the legacy Python watchdog after `RECORDER_GUARD=auto` proves
+  stable," no longer applies — that flag never ships).
+- **Context:** Decision record: [ADR-0016](project/docs/editing/adr/ADR-0016-recorder-supervision-ctypes-not-rust.md)
+  (ctypes not Rust) and [ADR-0017](project/docs/editing/adr/ADR-0017-adr0007-sla-verdict-confirmed.md)
+  (ADR-0007 SLA gate: PASS, Track R3 not triggered — zero-copy capture CPU is 1.06-1.19% of this
+  16-core machine per monitor, well under the 5% SLA). Full telemetry and methodology:
+  `project/docs/migration/track-r2-baseline.md` and `track-r2-m2a-decision.md`. New tests:
+  `test_process_guard.py::TestResumeSuspendedProcess`, `test_parity_clip_port.py`,
+  `test_clip_builder_condition_regression.py`, plus extensions to `test_proc_telemetry.py` and
+  `test_bench_report.py`.
+- **If revisited:** only if poll-based crash/stall detection (~1s crash, ~360s stall at production
+  segment durations) proves to be a real operational problem (not theoretical) — reopens with a
+  fresh spike/ADR, same reopening pattern as ADR-0007 (DXGI capture).
+- **Completed:** 2026-07-11 (branch `feat/f1-backend-headless`)
+
 ### Audit log for IT unlocks and role changes
 - **What:** Persist an audit trail (who / when / which machine) for IT-PIN
   unlocks (`Ctrl+Alt+Shift+R`) and role changes (`setRole`).

@@ -24,6 +24,7 @@ from app.adapters.filesystem.storage_adapter import FilesystemStorageAdapter
 from app.adapters.ml.iou_tracker import IouTracker
 from app.adapters.ml.live_inference_service import LiveInferenceService
 from app.adapters.ml.mock_detector import MockDetectorAdapter
+from app.adapters.native import make_clip_adapter
 from app.adapters.storage.sqlite_analytics import SqliteAnalyticsAdapter
 from app.adapters.storage.sqlite_event_store import SqliteEventStoreAdapter
 from app.core.analytics.batch_clip_analyzer import BatchClipAnalyzer
@@ -33,6 +34,7 @@ from app.core.analytics.sidecar import write_sidecar
 from app.core.auto_event_service import AutoEventService
 from app.core.disk_monitor import DiskSpaceMonitor
 from app.core.event_service import EventService
+from app.core.ports.segment_compiler_port import SegmentCompilerPort
 from app.core.recording_health.service import RecordingHealthService
 from app.core.recording_service.buffer_manager import BufferManager
 from app.core.recording_service.clip_builder import ClipBuilder
@@ -130,6 +132,7 @@ def build_recording_backend(
     all_monitors: List[MonitorInfo],
     clips_dir: Path,
     raw_clips_dir: Path,
+    segment_compiler: Optional[SegmentCompilerPort] = None,
 ) -> RecordingBackend:
     """Build the recording stack (or an empty backend for non-recording roles)."""
     if not is_recording_role(user_config.role):
@@ -201,9 +204,14 @@ def build_recording_backend(
         initial_selection = [next((m for m in all_monitors if m.is_primary), all_monitors[0])]
     backend.recording_service.change_monitors(initial_selection)
 
+    clip_compiler = (
+        make_clip_adapter(segment_compiler, settings.clip_engine)
+        if segment_compiler is not None
+        else None
+    )
     backend.clip_builder = ClipBuilder(
         recording_service=backend.recording_service,
-        clip_adapter=FFmpegTrimAdapter(codec=settings.video_codec),
+        clip_adapter=FFmpegTrimAdapter(codec=settings.video_codec, segment_compiler=clip_compiler),
         clips_dir=clips_dir,
         pre_seconds=settings.event_pre_seconds,
         post_seconds=settings.event_post_seconds,

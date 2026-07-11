@@ -5,6 +5,7 @@ import type { MonitorDTO } from "../../types/dto";
 interface MonitorTileProps {
   monitor: MonitorDTO;
   isRecording: boolean;
+  fillContainer?: boolean;
 }
 
 const PREVIEW_INTERVAL_MS = 500; // matches FFmpegRecorderAdapter's preview_fps=2
@@ -14,7 +15,7 @@ const PREVIEW_INTERVAL_MS = 500; // matches FFmpegRecorderAdapter's preview_fps=
  * (TD-5: never over JSON invoke) — a plain <img> polling with a cache-busting
  * query param is simplest and avoids the WS/MJPEG plumbing for a 2 fps feed.
  */
-export default function MonitorTile({ monitor, isRecording }: MonitorTileProps) {
+export default function MonitorTile({ monitor, isRecording, fillContainer }: MonitorTileProps) {
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -27,18 +28,20 @@ export default function MonitorTile({ monitor, isRecording }: MonitorTileProps) 
     <div
       style={{
         position: "relative",
-        aspectRatio: "16 / 9",
-        borderRadius: "var(--r-md)",
+        aspectRatio: fillContainer ? "auto" : "16 / 9",
+        width: fillContainer ? "100%" : "auto",
+        height: fillContainer ? "100%" : "auto",
+        borderRadius: fillContainer ? 0 : "var(--r-md)",
         overflow: "hidden",
         background: "var(--bg-base)",
-        border: `1px solid ${monitor.selected ? "var(--accent-monitor)" : "var(--border-base)"}`,
+        border: fillContainer ? "none" : `1px solid ${monitor.selected ? "var(--accent-monitor)" : "var(--border-base)"}`,
       }}
     >
       {monitor.selected ? (
         <img
           src={`${previewUrl(monitor.index)}?t=${tick}`}
           alt={monitor.name}
-          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+          style={{ width: "100%", height: "100%", objectFit: fillContainer ? "contain" : "cover", display: "block" }}
         />
       ) : (
         <div

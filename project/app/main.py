@@ -171,6 +171,11 @@ def main() -> None:
     _register_ffmpeg_cleanup()
     configure_logging()
     settings = get_settings()
+    # Rust segment engine when available, FFmpeg fallback otherwise (ADR-0006).
+    # Constructed once here (not per-use) so build_recording_backend()'s clip
+    # path (Track R2 M1, CLIP_ENGINE) and the editor's export path below share
+    # the exact same engine instance.
+    segment_compiler = make_segment_compiler(codec=settings.video_codec)
 
     # ── User config (persisted preferences) ──────────────────────────
     user_config_port = JsonUserConfigAdapter()
@@ -273,6 +278,7 @@ def main() -> None:
         all_monitors=all_monitors,
         clips_dir=clips_dir,
         raw_clips_dir=raw_clips_dir,
+        segment_compiler=segment_compiler,
     )
     combined_builder     = backend.combined_builder
     per_monitor_builders = backend.per_monitor_builders
@@ -352,8 +358,8 @@ def main() -> None:
     # ── Player / Editor / OneDrive services (no Qt) ───────────────────
     inspector      = FFprobeClipInspectorAdapter()
     player_service = PlayerService(inspector=inspector)
-    # Rust segment engine when available, FFmpeg fallback otherwise (ADR-0006).
-    segment_compiler = make_segment_compiler(codec=settings.video_codec)
+    # segment_compiler was already constructed near the top of main() so
+    # build_recording_backend()'s clip path could share the same instance.
     # reencode=True: frame-exact cuts + normalize every clip to one format, so
     # mixed-codec/resolution reels just work (evidence reel favors precision).
     editor_export    = FFmpegEditorExportAdapter(

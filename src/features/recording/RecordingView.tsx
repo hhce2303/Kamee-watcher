@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useRecording } from "../../hooks/useRecording";
 import { useAppStore } from "../../stores/appStore";
 import MonitorSelector from "./MonitorSelector";
-import MonitorTile from "./MonitorTile";
+import DraggableWorkspace from "./DraggableWorkspace";
 import BufferTimeline, { type EventMarker } from "./BufferTimeline";
 import MarkEventButton from "./MarkEventButton";
 import PreRollOverlay from "./PreRollOverlay";
@@ -148,20 +148,7 @@ export default function RecordingView() {
           </div>
         )}
 
-        <div
-          style={{
-            flex: 1,
-            display: "grid",
-            gridTemplateColumns: `repeat(${Math.min(monitors.length, 2) || 1}, 1fr)`,
-            gap: "var(--sp-4)",
-            alignContent: "start",
-            overflow: "auto",
-          }}
-        >
-          {monitors.map((m) => (
-            <MonitorTile key={m.fingerprint} monitor={m} isRecording={state.is_recording} />
-          ))}
-        </div>
+        <DraggableWorkspace monitors={monitors} isRecording={state.is_recording} />
 
         <BufferTimeline recordSec={state.record_seconds} eventMarkers={markers} />
       </div>
