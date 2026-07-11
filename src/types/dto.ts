@@ -148,6 +148,15 @@ export interface ClipFailedEvent {
   message: string;
 }
 
+export interface RecordingDegradedEvent {
+  event: "recording_degraded";
+  message: string;
+}
+
+export interface RecordingRecoveredEvent {
+  event: "recording_recovered";
+}
+
 export interface LogMessageEvent {
   event: "log_message";
   message: string;
@@ -251,6 +260,8 @@ export interface BackendEventMap {
   clips_changed: ClipsChangedEvent;
   recording_failed: RecordingFailedEvent;
   clip_failed: ClipFailedEvent;
+  recording_degraded: RecordingDegradedEvent;
+  recording_recovered: RecordingRecoveredEvent;
   log_message: LogMessageEvent;
   request_show_window: RequestShowWindowEvent;
   timeline_changed: TimelineChangedEvent;

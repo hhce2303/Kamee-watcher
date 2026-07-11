@@ -206,6 +206,10 @@ body,
   color: var(--accent-record);
 }
 
+.log-drawer__row--warning {
+  color: var(--accent-yellow);
+}
+
 .log-drawer__msg {
   overflow: hidden;
   text-overflow: ellipsis;

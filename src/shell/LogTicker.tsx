@@ -1,4 +1,4 @@
-import { useAppStore } from "../stores/appStore";
+import { LOG_LEVEL_STYLE, useAppStore } from "../stores/appStore";
 
 /**
  * Ambient "something just happened" slot inside the existing Statusbar — never a new
@@ -16,7 +16,7 @@ export default function LogTicker() {
     <span
       key={entry.id}
       className="log-ticker"
-      style={{ color: entry.level === "error" ? "var(--accent-record)" : "var(--text-muted)" }}
+      style={{ color: LOG_LEVEL_STYLE[entry.level].color }}
       title={entry.message}
     >
       {entry.message}

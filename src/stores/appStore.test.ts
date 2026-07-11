@@ -93,6 +93,23 @@ describe("appStore", () => {
     errorSpy.mockRestore();
   });
 
+  it("recording_degraded pushes a warning log; recording_recovered pushes info", () => {
+    invoke.mockImplementation(async () => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const cleanup = initAppStore();
+    emitFake("recording_degraded", { event: "recording_degraded", message: "idx=0 RECOVERING" });
+    emitFake("recording_recovered", { event: "recording_recovered" });
+
+    const logs = useAppStore.getState().logs;
+    expect(logs.map((n) => n.message)).toEqual(["Recording recovered.", "idx=0 RECOVERING"]);
+    expect(logs[1].level).toBe("warning");
+    expect(logs[0].level).toBe("info");
+    // Warning must not pin lastError — that's reserved for hard failures.
+    expect(useAppStore.getState().lastError).toBeNull();
+    cleanup();
+    errorSpy.mockRestore();
+  });
+
   it("toggleLogDrawer opens the drawer, clears unread count and the pinned error", () => {
     useAppStore.setState({
       logs: [{ id: 1, message: "boom", level: "error", ts: 0 }],

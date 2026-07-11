@@ -1,4 +1,4 @@
-import { useAppStore } from "../stores/appStore";
+import { LOG_LEVEL_STYLE, useAppStore } from "../stores/appStore";
 
 function fmtTime(ts: number): string {
   const d = new Date(ts);
@@ -25,7 +25,7 @@ export default function LogDrawer() {
             <div className="log-drawer__empty">Sin actividad todavía.</div>
           ) : (
             logs.map((entry) => (
-              <div key={entry.id} className={`log-drawer__row${entry.level === "error" ? " log-drawer__row--error" : ""}`}>
+              <div key={entry.id} className={`log-drawer__row${LOG_LEVEL_STYLE[entry.level].rowClass}`}>
                 <span className="log-drawer__msg">{entry.message}</span>
                 <span className="log-drawer__ts">{fmtTime(entry.ts)}</span>
               </div>

@@ -255,12 +255,38 @@ export interface OneDriveFailed {
  */
 export interface OpenItWsPort {}
 /**
+ * Info about the operator-only localhost MJPEG preview server.
+ *
+ * This interface was referenced by `DtoSchema`'s JSON-Schema
+ * via the `definition` "PreviewServerInfo".
+ */
+export interface PreviewServerInfo {
+  active: boolean;
+  base_url: string;
+  stream_url_template: string;
+}
+/**
+ * This interface was referenced by `DtoSchema`'s JSON-Schema
+ * via the `definition` "RecordingDegraded".
+ */
+export interface RecordingDegraded {
+  event?: "recording_degraded";
+  message: string;
+}
+/**
  * This interface was referenced by `DtoSchema`'s JSON-Schema
  * via the `definition` "RecordingFailed".
  */
 export interface RecordingFailed {
   event?: "recording_failed";
   message: string;
+}
+/**
+ * This interface was referenced by `DtoSchema`'s JSON-Schema
+ * via the `definition` "RecordingRecovered".
+ */
+export interface RecordingRecovered {
+  event?: "recording_recovered";
 }
 /**
  * Snapshot of the recording subsystem — replaces polled bridge properties.

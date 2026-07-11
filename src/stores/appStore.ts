@@ -7,9 +7,18 @@ import type { BackendEventMap, SettingsSnapshot } from "../types/dto";
 export interface LogEntry {
   id: number;
   message: string;
-  level: "info" | "error";
+  level: "info" | "warning" | "error";
   ts: number;
 }
+
+/** Single source of truth for level → row class / color, shared by LogDrawer and LogTicker
+ *  so the two never drift out of sync when a level is added. Keyed by `LogEntry["level"]`
+ *  (not a hand-copied literal union) so adding a level is a type error here until filled in. */
+export const LOG_LEVEL_STYLE: Record<LogEntry["level"], { rowClass: string; color: string }> = {
+  info:    { rowClass: "",                        color: "var(--text-muted)" },
+  warning: { rowClass: " log-drawer__row--warning", color: "var(--accent-yellow)" },
+  error:   { rowClass: " log-drawer__row--error",   color: "var(--accent-record)" },
+};
 
 interface AppState {
   ipcConnected: boolean;
@@ -101,6 +110,12 @@ export function initAppStore(): () => void {
   );
   unlisteners.push(
     listen<BackendEventMap["clip_failed"]>("clip_failed", (e) => pushLog(e.payload.message, "error")),
+  );
+  unlisteners.push(
+    listen<BackendEventMap["recording_degraded"]>("recording_degraded", (e) => pushLog(e.payload.message, "warning")),
+  );
+  unlisteners.push(
+    listen<BackendEventMap["recording_recovered"]>("recording_recovered", () => pushLog("Recording recovered.", "info")),
   );
 
   // In case the pipe is already connected by the time this runs.
