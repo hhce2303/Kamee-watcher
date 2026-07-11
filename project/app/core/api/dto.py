@@ -303,6 +303,15 @@ class ClipFailed(BaseEvent):
     message: str
 
 
+class RecordingDegraded(BaseEvent):
+    event: Literal["recording_degraded"] = "recording_degraded"
+    message: str
+
+
+class RecordingRecovered(BaseEvent):
+    event: Literal["recording_recovered"] = "recording_recovered"
+
+
 class LogMessage(BaseEvent):
     event: Literal["log_message"] = "log_message"
     message: str

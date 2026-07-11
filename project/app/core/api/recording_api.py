@@ -135,6 +135,20 @@ class RecordingApi:
     def on_clip_failed(self, message: str) -> None:
         self._bus.publish(dto.ClipFailed(message=message))
 
+    def on_recording_degraded(self, report: dict) -> None:
+        """RecordingHealthService callback — one or more workers not RECORDING."""
+        problems = ", ".join(
+            f"idx={idx} {status}"
+            for idx, status in report.get("workers", {}).items()
+            if status != "RECORDING"
+        )
+        message = f"Recording degraded: {problems}" if problems else "Recording degraded."
+        self._bus.publish(dto.RecordingDegraded(message=message))
+
+    def on_recording_recovered(self) -> None:
+        """RecordingHealthService callback — all workers back to RECORDING."""
+        self._bus.publish(dto.RecordingRecovered())
+
     def on_monitors_updated(self, monitors: List[MonitorInfo]) -> None:
         """Detection-thread callback — refresh the list and re-publish."""
         self._all_monitors = list(monitors)

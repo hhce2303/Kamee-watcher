@@ -309,8 +309,11 @@ def main() -> None:
         recording_service.start()
     elif recording_service is not None:
         logger.info("Auto-record off for this role/config — buffer not started at launch.")
-    if health_service is not None:
-        health_service.start()
+    # health_service.start() is deferred until after set_callbacks() below —
+    # api (whose methods those callbacks call) doesn't exist yet here, and
+    # starting the poll loop before callbacks are wired risks silently
+    # dropping a degraded→recovered transition that completes entirely
+    # within that window.
     if disk_monitor is not None:
         disk_monitor.start()
     detection_service.start()
@@ -432,6 +435,12 @@ def main() -> None:
         w.set_on_recording_failed(api.recording.on_recording_failed)
     if event_service is not None:
         event_service._on_clip_failed = api.recording.on_clip_failed  # noqa: SLF001
+    if health_service is not None:
+        health_service.set_callbacks(
+            on_degraded=api.recording.on_recording_degraded,
+            on_recovered=api.recording.on_recording_recovered,
+        )
+        health_service.start()
 
     # ── "Apply encoder now" (shared, C2) ──────────────────────────────
     # Stops the live recording, applies the new codec/driver to every recorder

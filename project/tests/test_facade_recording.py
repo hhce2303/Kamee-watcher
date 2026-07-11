@@ -177,3 +177,35 @@ def test_recording_and_clip_failure_callbacks_publish() -> None:
     api.on_clip_failed("clip build failed")
     bus.drain()
     assert len(fails) == 2
+
+
+def test_recording_degraded_summarizes_non_recording_workers() -> None:
+    bus, api = _make_api()
+    degraded: list[dto.RecordingDegraded] = []
+    bus.subscribe(dto.RecordingDegraded, degraded.append)
+    api.on_recording_degraded({"workers": {0: "RECOVERING", 1: "RECORDING"}})
+    bus.drain()
+    assert len(degraded) == 1
+    assert "idx=0 RECOVERING" in degraded[0].message
+    assert "idx=1" not in degraded[0].message
+
+
+def test_recording_degraded_falls_back_to_generic_message_when_no_problems() -> None:
+    bus, api = _make_api()
+    degraded: list[dto.RecordingDegraded] = []
+    bus.subscribe(dto.RecordingDegraded, degraded.append)
+    api.on_recording_degraded({})
+    api.on_recording_degraded({"workers": {0: "RECORDING"}})
+    bus.drain()
+    assert len(degraded) == 2
+    assert degraded[0].message == "Recording degraded."
+    assert degraded[1].message == "Recording degraded."
+
+
+def test_recording_recovered_publishes() -> None:
+    bus, api = _make_api()
+    recovered: list[dto.RecordingRecovered] = []
+    bus.subscribe(dto.RecordingRecovered, recovered.append)
+    api.on_recording_recovered()
+    bus.drain()
+    assert len(recovered) == 1
