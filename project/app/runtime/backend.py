@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -38,7 +39,7 @@ from app.core.ports.segment_compiler_port import SegmentCompilerPort
 from app.core.recording_health.service import RecordingHealthService
 from app.core.recording_service.buffer_manager import BufferManager
 from app.core.recording_service.clip_builder import ClipBuilder
-from app.core.recording_service.models import MonitorInfo, Segment
+from app.core.recording_service.models import EventContext, MonitorInfo, Segment
 from app.core.recording_service.monitor_worker import MonitorWorker
 from app.core.recording_service.service import RecordingService
 from app.core.recording_service.supervisor import RecorderSupervisor
@@ -132,6 +133,7 @@ def build_recording_backend(
     all_monitors: List[MonitorInfo],
     clips_dir: Path,
     raw_clips_dir: Path,
+    event_clips_dir: Path,
     segment_compiler: Optional[SegmentCompilerPort] = None,
 ) -> RecordingBackend:
     """Build the recording stack (or an empty backend for non-recording roles)."""
@@ -164,13 +166,14 @@ def build_recording_backend(
         cell_width=settings.combined_cell_width,
         cell_height=settings.combined_cell_height,
         quality=settings.combined_quality,
+        window_minutes=settings.clip_window_minutes,
     )
 
     def _make_builder(monitor: MonitorInfo) -> HourlyRecordingBuilder:
-        def _on_clip_ready(clip_path: Path) -> None:
-            backend.combined_builder.on_clip_ready(clip_path)
+        def _on_clip_ready(clip_path: Path, window_key: str, real_start: datetime) -> None:
+            backend.combined_builder.on_clip_ready(clip_path, window_key, real_start)
             if backend.batch_analyzer is not None:
-                backend.batch_analyzer.queue_clip(clip_path)
+                backend.batch_analyzer.queue_clip(clip_path, real_start)
 
         b = HourlyRecordingBuilder(
             output_dir=raw_clips_dir,
@@ -212,7 +215,7 @@ def build_recording_backend(
     backend.clip_builder = ClipBuilder(
         recording_service=backend.recording_service,
         clip_adapter=FFmpegTrimAdapter(codec=settings.video_codec, segment_compiler=clip_compiler),
-        clips_dir=clips_dir,
+        clips_dir=event_clips_dir,
         pre_seconds=settings.event_pre_seconds,
         post_seconds=settings.event_post_seconds,
         timestamp_adapter=FFmpegTimestampAdapter(codec=settings.video_codec),
@@ -251,23 +254,48 @@ def build_recording_backend(
         _detector = MockDetectorAdapter()
         logger.info("[backend] no ONNX model configured — using mock detector")
 
+    # Guards how often a detection schedules a full clip BUILD (as opposed to
+    # EVENT_COOLDOWN_SECONDS, which only gates how often a detection becomes an
+    # AnalyticEvent for analytics/timeline purposes). Without this, continuous
+    # detections (e.g. a person lingering) each scheduled their own full
+    # multi-monitor re-encode — with a 4-minute clip window and a 30s event
+    # cooldown that meant up to 8 heavily-overlapping clips for one visit.
+    _auto_build_lock = threading.Lock()
+    _last_auto_build_at: Optional[datetime] = None
+    _auto_build_min_interval = timedelta(
+        seconds=settings.event_auto_build_min_interval_seconds
+    )
+
     def _on_auto_event(event: AnalyticEvent) -> None:
+        nonlocal _last_auto_build_at
         backend.event_store.add(event)
+
+        with _auto_build_lock:
+            if (
+                _last_auto_build_at is not None
+                and event.start - _last_auto_build_at < _auto_build_min_interval
+            ):
+                logger.debug(
+                    "[auto-event] clip build coalesced — already covered by a pending/recent build."
+                )
+                return
+            _last_auto_build_at = event.start
+
         ctx = backend.clip_builder.snapshot_event(event.start)
 
-        def _build_auto_clip() -> None:
-            output = backend.clip_builder.build(ctx)
-            if output:
-                updated = event.model_copy(update={"clip_path": output})
-                backend.event_store.add(updated)
-                try:
-                    write_sidecar(output, [updated])
-                except OSError:
-                    logger.warning("[auto-event] could not write sidecar for {}", output)
+        def _persist_auto_clip(_ctx: EventContext, output: Path) -> None:
+            updated = event.model_copy(update={"clip_path": output})
+            backend.event_store.add(updated)
+            try:
+                write_sidecar(output, [updated])
+            except OSError:
+                logger.warning("[auto-event] could not write sidecar for {}", output)
 
-        t = threading.Timer(settings.event_post_seconds, _build_auto_clip)
-        t.daemon = True
-        t.start()
+        # Routed through EventService.schedule_clip_build (not a bespoke timer)
+        # so auto-event builds get the same retry-on-failure and success/error
+        # logging as manual events — previously an exception here died silently
+        # inside the Timer thread with no log line at all.
+        backend.event_service.schedule_clip_build(ctx, on_built=_persist_auto_clip)
 
     # Fase 4 — wrap detector in LiveInferenceService (motion gate + tracker).
     # AutoEventService subscribes to live_service, not the raw detector, so the

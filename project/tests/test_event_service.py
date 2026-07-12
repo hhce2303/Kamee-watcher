@@ -126,3 +126,48 @@ class TestEventServiceScheduler:
         import time; time.sleep(0.1)
         svc2, _ = make_event_service(cooldown=0)
         assert svc2.trigger_manual_event() is True
+
+
+class TestScheduleClipBuildOnBuiltOverride:
+    """schedule_clip_build(ctx, on_built=...) is the seam that lets callers
+    outside the cooldown-gated manual flow (namely the auto-detection
+    pipeline in app.runtime.backend) reuse the same retry/logging machinery
+    with their own persistence callback instead of a bespoke unhandled Timer."""
+
+    def test_on_built_override_used_instead_of_constructor_default(self) -> None:
+        svc, clip_builder = make_event_service(post_seconds=0, cooldown=0)
+        clip_builder.build.return_value = Path("clips/auto_event.mp4")
+
+        default_cb = MagicMock()
+        svc._on_clip_built = default_cb  # constructor default, must NOT fire
+
+        override_cb = MagicMock()
+        done = threading.Event()
+        override_cb.side_effect = lambda ctx, output: done.set()
+
+        ctx = _snapshot(datetime.now(tz=timezone.utc))
+        svc.schedule_clip_build(ctx, on_built=override_cb)
+
+        assert done.wait(timeout=2.0)
+        override_cb.assert_called_once()
+        default_cb.assert_not_called()
+
+    def test_on_built_override_survives_retry(self) -> None:
+        """A failed first attempt must retry with the SAME override, not fall
+        back to the constructor default on retry."""
+        svc, clip_builder = make_event_service(post_seconds=0, cooldown=0)
+        svc._retry_delay_seconds = 0
+
+        # First call returns None (triggers a retry), second succeeds.
+        clip_builder.build.side_effect = [None, Path("clips/auto_event.mp4")]
+
+        override_cb = MagicMock()
+        done = threading.Event()
+        override_cb.side_effect = lambda ctx, output: done.set()
+
+        ctx = _snapshot(datetime.now(tz=timezone.utc))
+        svc.schedule_clip_build(ctx, on_built=override_cb)
+
+        assert done.wait(timeout=2.0)
+        assert clip_builder.build.call_count == 2
+        override_cb.assert_called_once()

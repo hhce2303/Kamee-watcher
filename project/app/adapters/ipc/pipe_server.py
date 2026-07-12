@@ -44,6 +44,7 @@ class NamedPipeIpcServer:
         self._subscription = None
         self._ready = threading.Event()   # set once the pipe exists (start() waits)
         self._bound = False               # True once CreateNamedPipe succeeded
+        self._security_attrs = None       # built by start() before the accept thread runs
         # Events are enqueued by the bus dispatcher thread and flushed by the
         # single serve thread — ALL pipe I/O happens on that one thread, so a
         # blocking read never serializes against an event write (synchronous
@@ -64,6 +65,13 @@ class NamedPipeIpcServer:
             return
         # Fail fast + clearly if the transport dependency is missing.
         import win32pipe  # noqa: F401, PLC0415
+
+        # Build the user-scoped security descriptor (ADR-0011) on THIS thread,
+        # before spawning the accept-loop thread, so a failure here raises out
+        # of start() (and is caught by the runtime, e.g. HeadlessRuntime._serve)
+        # instead of being swallowed inside the background thread and silently
+        # falling back to the pipe's default (unscoped) Windows DACL.
+        self._security_attrs = security.make_security_attributes()
 
         self._running = True
         self._ready.clear()
@@ -98,7 +106,7 @@ class NamedPipeIpcServer:
         import pywintypes       # noqa: PLC0415
         import winerror         # noqa: PLC0415
 
-        sa = self._safe_security_attributes()
+        sa = self._security_attrs
         while self._running:
             try:
                 handle = win32pipe.CreateNamedPipe(
@@ -206,13 +214,6 @@ class NamedPipeIpcServer:
         win32file.WriteFile(handle, data)
 
     # ── Helpers ───────────────────────────────────────────────────────
-
-    def _safe_security_attributes(self):
-        try:
-            return security.make_security_attributes()
-        except Exception:  # noqa: BLE001
-            logger.exception("[ipc] could not build security attributes — using default ACL")
-            return None
 
     def _nudge(self) -> None:
         """Open + close a client handle to unblock a pending ConnectNamedPipe."""

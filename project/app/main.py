@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import sys
 import pathlib
 # Ensure the app package is discoverable when running main.py directly
@@ -7,22 +7,21 @@ sys.path.append(str(pathlib.Path(__file__).parent.parent))
 import atexit
 import os
 import time
-from typing import List
+from typing import Callable, List, Optional
 
 from loguru import logger
 from pathlib import Path
 
-from app.infrastructure.config import get_settings
+from app.infrastructure.config import Settings, get_settings
+from app.infrastructure.clip_migration import migrate_legacy_event_clips
 from app.infrastructure.logging_setup import configure_logging, set_event_bus
-from app.core.recording_service.buffer_manager import BufferManager
-from app.core.recording_service.clip_builder import ClipBuilder
-from app.core.recording_service.models import MonitorInfo, Segment
-from app.core.recording_service.monitor_worker import MonitorWorker
+from app.core.recording_service.models import MonitorInfo
 from app.core.recording_service.service import RecordingService
-from app.core.event_service import EventService
 from app.core.cloud_share_service import CloudShareService
 from app.adapters.cloud.local_share_adapter import LocalShareAdapter
 from app.core.player.player_service import PlayerService
+from app.core.ports.segment_compiler_port import SegmentCompilerPort
+from app.core.ports.user_config_port import UserConfig, UserConfigPort
 from app.core.role import (
     IT,
     OPERATOR,
@@ -32,23 +31,15 @@ from app.core.role import (
     should_autorecord_on_launch,
 )
 from app.adapters.ffmpeg import encoder_selector
-from app.adapters.ffmpeg.recorder_adapter import FFmpegRecorderAdapter
-from app.adapters.ffmpeg.trim_adapter import FFmpegTrimAdapter
-from app.adapters.ffmpeg.timestamp_adapter import FFmpegTimestampAdapter
 from app.adapters.ffmpeg.clip_inspector_adapter import FFprobeClipInspectorAdapter
 from app.adapters.ffmpeg.mp4_converter_adapter import FFmpegMp4ConverterAdapter
-from app.adapters.ffmpeg.hourly_recording_builder import HourlyRecordingBuilder
-from app.adapters.ffmpeg.combined_clip_builder import CombinedClipBuilder
 from app.adapters.ffmpeg.editor_export_adapter import FFmpegEditorExportAdapter
 from app.adapters.native import make_segment_compiler
-from app.adapters.storage.sqlite_event_store import SqliteEventStoreAdapter
 from app.adapters.filesystem.file_browser_adapter import WindowsFileBrowserAdapter
-from app.core.api.bootstrap import build_api_layer
-from app.runtime.backend import build_recording_backend
-from app.runtime.mode import DAEMON, SIDECAR, resolve_mode
+from app.core.api.bootstrap import ApiLayer, build_api_layer
+from app.runtime.backend import RecordingBackend, build_recording_backend
+from app.runtime.mode import DAEMON, resolve_mode
 from app.infrastructure.proc_telemetry import get_telemetry
-from app.core.analytics.manual_event import analytic_event_from_context
-from app.core.analytics.sidecar import write_sidecar
 from app.adapters.filesystem.storage_adapter import FilesystemStorageAdapter
 from app.adapters.filesystem.user_config_adapter import JsonUserConfigAdapter
 from app.adapters.monitor.screeninfo_adapter import ScreeninfoMonitorAdapter
@@ -56,10 +47,7 @@ from app.adapters.filesystem.request_adapter import JsonRequestAdapter
 from app.adapters.ws.request_server import ClipRequestServer
 from app.adapters.ws.request_client import ClipRequestClient
 from app.adapters.preview_server.mjpeg_server_adapter import MjpegPreviewServerAdapter
-from app.core.recording_service.supervisor import RecorderSupervisor
-from app.core.disk_monitor import DiskSpaceMonitor
 from app.core.monitor_detection.service import MonitorDetectionService
-from app.core.recording_health.service import RecordingHealthService
 # LivePreviewService removed — preview is now embedded in the recorder FFmpeg process
 
 
@@ -161,14 +149,23 @@ def _release_single_instance_lock(mutex: object) -> None:
         pass
 
 
-def main() -> None:
-    # Peek the role before the lock so an operator box exits 0 (no dialog) on a
-    # benign contention — its restart watchdog must not read that as a crash.
-    _instance_lock = _acquire_single_instance_lock(operator_silent=_peek_role() == OPERATOR)
-    # Set by the role-change relaunch callback; checked after app.exec() returns
-    # so the existing teardown runs once before we spawn the replacement.
-    _relaunch_flag = {"requested": False}
-    _register_ffmpeg_cleanup()
+def _warn_if_default_it_pin(settings) -> None:
+    """Loud, visible warning only — NOT a behavior change.
+
+    Removing the "1234" default outright would make unlock_it() compare
+    against None forever (a silent, permanent lockout — no downstream
+    None-check exists today); that tradeoff needs an explicit decision,
+    tracked in TODOS.md.
+    """
+    if settings.it_pin == "1234":
+        logger.warning(
+            "SECURITY: IT_PIN is still the default value \"1234\" — change it "
+            "before deploying to a fleet (see .env.example)."
+        )
+
+
+def _bootstrap_logging_and_settings() -> tuple[Settings, SegmentCompilerPort]:
+    """Configure logging, load settings, and build the shared segment compiler."""
     configure_logging()
     settings = get_settings()
     # Rust segment engine when available, FFmpeg fallback otherwise (ADR-0006).
@@ -176,16 +173,26 @@ def main() -> None:
     # path (Track R2 M1, CLIP_ENGINE) and the editor's export path below share
     # the exact same engine instance.
     segment_compiler = make_segment_compiler(codec=settings.video_codec)
+    return settings, segment_compiler
 
-    # ── User config (persisted preferences) ──────────────────────────
+
+def _load_user_config_and_clips_dir(settings: Settings) -> tuple[UserConfigPort, UserConfig, Path]:
+    """Load persisted user config and resolve the effective clips directory."""
     user_config_port = JsonUserConfigAdapter()
     user_config = user_config_port.load()
-
     # Override clips_dir with user-chosen path if one was saved.
     clips_dir = (
         Path(user_config.clips_dir) if user_config.clips_dir else settings.clips_dir
     )
+    return user_config_port, user_config, clips_dir
 
+
+def _enforce_role_and_configure_encoder(user_config: UserConfig, settings: Settings) -> None:
+    """Apply role constraints (autorecord/autostart) and resolve the encoder.
+
+    Mutates ``user_config`` and ``settings`` in place — same contract as the
+    inline code this was extracted from.
+    """
     # ── Role enforcement ──────────────────────────────────────────────
     # Applies per-role constraints (forced autorecord, autostart registry)
     # before any service is started.  enforce_role() mutates user_config
@@ -219,15 +226,12 @@ def main() -> None:
         "Encoder config: driver={} codec={}", user_config.driver, settings.video_codec
     )
 
-    logger.info("The Watcher starting...")
-    logger.info(
-        "Config: segment_dir={} clips_dir={} retention={}h segment_duration={}s",
-        settings.segment_dir,
-        clips_dir,
-        settings.retention_hours,
-        settings.segment_duration,
-    )
 
+def _prepare_directories(settings: Settings, clips_dir: Path) -> tuple[Path, Path]:
+    """Ensure every output directory exists; return (raw_clips_dir, event_clips_dir).
+
+    Also migrates any legacy event clips that used to be mixed into clips_dir.
+    """
     # ── Ensure output directories exist from the very first second ────
     # clips_dir is normally created lazily (on first clip build) which means
     # the folder wouldn't appear until an event is triggered.  Create it now
@@ -236,8 +240,34 @@ def main() -> None:
     settings.segment_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Output directories ready: segments={} | clips={}", settings.segment_dir, clips_dir)
 
-    # ── Infrastructure ────────────────────────────────────────────────
-    storage         = FilesystemStorageAdapter()
+    # ── Directory layout ──────────────────────────────────────────────
+    # WatcherData/
+    #   clips/          ← combined multi-monitor MP4 + timestamp overlay
+    #   clips_raw/      ← individual per-monitor raw clips (one file per screen)
+    #   clips_events/   ← auto/manual event-triggered highlight clips
+    #   segments/       ← rolling MPEG-TS segments (buffer, auto-pruned)
+    raw_clips_dir = settings.raw_clips_dir
+    raw_clips_dir.mkdir(parents=True, exist_ok=True)
+    # Fixed on local disk — does NOT follow a user-relocated clips_dir (matches
+    # raw_clips_dir's existing behavior).
+    event_clips_dir = settings.event_clips_dir
+    event_clips_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Directory layout: combined={} | raw={} | events={} | segments={}",
+                clips_dir, raw_clips_dir, event_clips_dir, settings.segment_dir)
+
+    # One-time cleanup: event clips used to be mixed into clips_dir — move any
+    # already sitting there (plus their .events.json sidecars) into their own
+    # folder. Idempotent, safe to run on every startup.
+    migrate_legacy_event_clips(clips_dir, event_clips_dir)
+
+    return raw_clips_dir, event_clips_dir
+
+
+def _detect_monitors(user_config: UserConfig) -> tuple[MonitorDetectionService, List[MonitorInfo]]:
+    """Build the monitor-detection service and run its synchronous first probe.
+
+    Exits the process if a recording role has no monitors detected.
+    """
     monitor_adapter = ScreeninfoMonitorAdapter()
 
     # ── Phase 1: MonitorDetectionService — source of truth for monitors ──
@@ -257,41 +287,19 @@ def main() -> None:
     elif not all_monitors:
         logger.info("Non-recording role — no monitors required, skipping recording setup.")
 
-    # ── Directory layout ──────────────────────────────────────────────
-    # WatcherData/
-    #   clips/          ← combined multi-monitor MP4 + timestamp overlay
-    #   clips_raw/      ← individual per-monitor raw clips (one file per screen)
-    #   segments/       ← rolling MPEG-TS segments (buffer, auto-pruned)
-    raw_clips_dir = settings.raw_clips_dir
-    raw_clips_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Directory layout: combined={} | raw={} | segments={}",
-                clips_dir, raw_clips_dir, settings.segment_dir)
+    return detection_service, all_monitors
 
-    # ── Recording stack (skipped for Supervisor role) ────────────────
-    # Built by the shared, Qt-free factory so the headless daemon/sidecar
-    # (ADR-0010) construct the same backend. Unpacked into locals so the rest
-    # of the Qt startup below is unchanged.
-    backend = build_recording_backend(
-        settings=settings,
-        user_config=user_config,
-        storage=storage,
-        all_monitors=all_monitors,
-        clips_dir=clips_dir,
-        raw_clips_dir=raw_clips_dir,
-        segment_compiler=segment_compiler,
-    )
-    combined_builder     = backend.combined_builder
-    per_monitor_builders = backend.per_monitor_builders
-    workers              = backend.workers
-    recording_service    = backend.recording_service
-    clip_builder         = backend.clip_builder
-    event_service        = backend.event_service
-    disk_monitor         = backend.disk_monitor
-    health_service       = backend.health_service
-    event_store          = backend.event_store
-    auto_event_service   = backend.auto_event_service
-    batch_analyzer       = backend.batch_analyzer
 
+def _start_recording_services(
+    backend: RecordingBackend,
+    user_config: UserConfig,
+    detection_service: MonitorDetectionService,
+    settings: Settings,
+) -> Optional[MjpegPreviewServerAdapter]:
+    """Start the operator preview server (if applicable) and every backend service.
+
+    Returns the preview server instance (None on non-operator roles).
+    """
     # Preview JPEGs are written by the recorder itself (backend.preview_paths,
     # segments/m{idx}/preview.jpg) and served to the UI via the watcher://
     # custom protocol (src-tauri) — the frontend polls at ~2 fps (TD-5: never
@@ -301,14 +309,15 @@ def main() -> None:
     # Starts an HTTP server on 127.0.0.1:{PREVIEW_HTTP_PORT} so any browser
     # on the operator PC can open a live MJPEG feed without Tauri.
     # Non-recording roles (Supervisor/IT/unconfigured) never start this.
-    _preview_server = None
+    preview_server = None
     if user_config.role == OPERATOR:
-        _preview_server = MjpegPreviewServerAdapter(settings)
-        _preview_server.start()
+        preview_server = MjpegPreviewServerAdapter(settings)
+        preview_server.start()
 
     # ── Start recording ───────────────────────────────────────────────
     # Operator always records; IT only if its autorecord toggle is on;
     # supervisor / unconfigured never start here (and have no stack anyway).
+    recording_service = backend.recording_service
     if recording_service is not None and should_autorecord_on_launch(
         user_config.role, user_config.autorecord
     ):
@@ -320,12 +329,12 @@ def main() -> None:
     # starting the poll loop before callbacks are wired risks silently
     # dropping a degraded→recovered transition that completes entirely
     # within that window.
-    if disk_monitor is not None:
-        disk_monitor.start()
+    if backend.disk_monitor is not None:
+        backend.disk_monitor.start()
     detection_service.start()
-    if auto_event_service is not None:
-        auto_event_service.start()
-    if batch_analyzer is not None:
+    if backend.auto_event_service is not None:
+        backend.auto_event_service.start()
+    if backend.batch_analyzer is not None:
         # NOTE: batch_analyzer and auto_event_service's live_service share the
         # same raw DetectorPort instance (backend.py) and each calls its own
         # start()/stop() on it. MockDetectorAdapter is idempotent either way;
@@ -333,11 +342,16 @@ def main() -> None:
         # so a real model pays a double-load here. Harmless today (no model
         # configured by default) — revisit detector lifecycle ownership before
         # shipping ONNX_MODEL_PATH to a fleet.
-        batch_analyzer.start()
+        backend.batch_analyzer.start()
 
+    return preview_server
+
+
+def _recover_startup_clips(backend: RecordingBackend, settings: Settings) -> None:
+    """Rebuild clips from any segments already on disk (crash/restart recovery)."""
     # ── Startup recovery: rebuild clips from existing segments ────────
-    for w in workers:
-        b = per_monitor_builders[w.monitor.index]
+    for w in backend.workers:
+        b = backend.per_monitor_builders[w.monitor.index]
         all_segs = list(w.buffer.all_segments())
         if all_segs:
             logger.info(
@@ -352,17 +366,21 @@ def main() -> None:
             )
 
     # ── Combined clip recovery ────────────────────────────────────────
-    if combined_builder is not None:
-        combined_builder.recover(backfill_hours=settings.retention_hours)
+    if backend.combined_builder is not None:
+        backend.combined_builder.recover(backfill_hours=settings.retention_hours)
 
-    # ── Player / Editor / OneDrive services (no Qt) ───────────────────
-    inspector      = FFprobeClipInspectorAdapter()
+
+def _build_player_editor_services(
+    segment_compiler: SegmentCompilerPort, settings: Settings
+) -> tuple[FFprobeClipInspectorAdapter, PlayerService, FFmpegEditorExportAdapter, CloudShareService]:
+    """Build the (Qt-free) player, editor export, and cloud-delivery services."""
+    inspector = FFprobeClipInspectorAdapter()
     player_service = PlayerService(inspector=inspector)
     # segment_compiler was already constructed near the top of main() so
     # build_recording_backend()'s clip path could share the same instance.
     # reencode=True: frame-exact cuts + normalize every clip to one format, so
     # mixed-codec/resolution reels just work (evidence reel favors precision).
-    editor_export    = FFmpegEditorExportAdapter(
+    editor_export = FFmpegEditorExportAdapter(
         segment_compiler, inspector=inspector, reencode=True
     )
     # Local adapter today (real folders under the OneDrive sync root, file:// links);
@@ -370,13 +388,31 @@ def main() -> None:
     cloud_share_service = CloudShareService(
         LocalShareAdapter(root=settings.onedrive_root)
     )
+    return inspector, player_service, editor_export, cloud_share_service
 
-    # ── core/api layer (F1, ADR-0009) ─────────────────────────────────
-    # One EventBus + the facades over every built service. The IPC channel
-    # (adapters/ipc) is the only input adapter over this layer now that QML
-    # is gone (F3). event_store doubles as the AuditPort so start/stop/
-    # unlock/setRole are audited on every path (ADR-0011); it is None on
-    # non-recording roles.
+
+def _build_api(
+    *,
+    detection_service: MonitorDetectionService,
+    settings: Settings,
+    user_config_port: UserConfigPort,
+    backend: RecordingBackend,
+    player_service: PlayerService,
+    editor_export: FFmpegEditorExportAdapter,
+    inspector: FFprobeClipInspectorAdapter,
+    cloud_share_service: CloudShareService,
+    clips_dir: Path,
+    event_clips_dir: Path,
+    preview_server: Optional[MjpegPreviewServerAdapter],
+) -> ApiLayer:
+    """Build and start the core/api Facade layer (F1, ADR-0009).
+
+    One EventBus + the facades over every built service. The IPC channel
+    (adapters/ipc) is the only input adapter over this layer now that QML
+    is gone (F3). event_store doubles as the AuditPort so start/stop/
+    unlock/setRole are audited on every path (ADR-0011); it is None on
+    non-recording roles.
+    """
     file_browser = WindowsFileBrowserAdapter(
         nas_username=settings.nas_username, nas_password=settings.nas_password
     )
@@ -386,9 +422,9 @@ def main() -> None:
         detection_service=detection_service,
         settings=settings,
         user_config_port=user_config_port,
-        audit_port=event_store,
-        recording_service=recording_service,
-        event_service=event_service,
+        audit_port=backend.event_store,
+        recording_service=backend.recording_service,
+        event_service=backend.event_service,
         player_service=player_service,
         export_port=editor_export,
         inspector=inspector,
@@ -396,62 +432,81 @@ def main() -> None:
         mp4_converter=mp4_converter,
         cloud_share_service=cloud_share_service,
         clips_dir=clips_dir,
+        event_clips_dir=event_clips_dir,
         slc_storage_host=settings.slc_storage_host,
         onedrive_base_folder=settings.onedrive_base_folder,
         analytics_query=backend.analytics,
-        preview_server=_preview_server,
+        preview_server=preview_server,
     )
     api.start()
     set_event_bus(api.bus)  # logs → LogMessage bus event (C3), replaces the Qt log panel sink
+    return api
 
-    # ── Request system (IT server / Supervisor client) — Qt-free (C1) ────
-    # Wired here, shared by every role/mode. Both roles share the same
-    # JsonRequestAdapter (same filesystem schema). Callbacks only touch the
-    # transport-agnostic facade, which publishes bus events the IPC-connected
-    # React UI subscribes to.
-    _req_adapter = JsonRequestAdapter()
-    _req_server = None
-    _req_client = None
+
+def _wire_request_system(
+    user_config: UserConfig, settings: Settings, api: ApiLayer
+) -> tuple[Optional[ClipRequestServer], Optional[ClipRequestClient]]:
+    """Wire the IT server / Supervisor client request system (Qt-free, C1).
+
+    Shared by every role/mode. Both roles share the same JsonRequestAdapter
+    (same filesystem schema). Callbacks only touch the transport-agnostic
+    facade, which publishes bus events the IPC-connected React UI subscribes to.
+    """
+    req_adapter = JsonRequestAdapter()
+    req_server = None
+    req_client = None
 
     if user_config.role == IT:
-        _req_server = ClipRequestServer(
+        req_server = ClipRequestServer(
             port=settings.it_ws_port,
-            request_adapter=_req_adapter,
+            request_adapter=req_adapter,
             on_request_received=api.requests.on_request_received,
         )
-        _req_server.start()
+        req_server.start()
     elif user_config.role == SUPERVISOR:
-        _req_client = ClipRequestClient(
+        req_client = ClipRequestClient(
             hosts=user_config.it_ws_hosts,
             port=settings.it_ws_port,
             on_status_received=api.requests.on_status_received,
         )
 
     api.requests.configure(
-        request_port=_req_adapter,
+        request_port=req_adapter,
         slc_storage_host=settings.slc_storage_host,
-        server=_req_server,
-        client=_req_client,
+        server=req_server,
+        client=req_client,
     )
+    return req_server, req_client
 
-    # ── Recording/clip failure → facade (shared, C2) ──────────────────
-    # Previously only wired on the QML path — a headless daemon/sidecar had
-    # no way to surface a recorder crash or a failed clip build to the UI.
-    for w in workers:
+
+def _wire_failure_callbacks(backend: RecordingBackend, api: ApiLayer) -> None:
+    """Wire recording/clip failure + health transitions to the facade (shared, C2).
+
+    Previously only wired on the QML path — a headless daemon/sidecar had no
+    way to surface a recorder crash or a failed clip build to the UI.
+    """
+    for w in backend.workers:
         w.set_on_recording_failed(api.recording.on_recording_failed)
-    if event_service is not None:
-        event_service._on_clip_failed = api.recording.on_clip_failed  # noqa: SLF001
-    if health_service is not None:
-        health_service.set_callbacks(
+    if backend.event_service is not None:
+        backend.event_service._on_clip_failed = api.recording.on_clip_failed  # noqa: SLF001
+    if backend.health_service is not None:
+        backend.health_service.set_callbacks(
             on_degraded=api.recording.on_recording_degraded,
             on_recovered=api.recording.on_recording_recovered,
         )
-        health_service.start()
+        backend.health_service.start()
 
-    # ── "Apply encoder now" (shared, C2) ──────────────────────────────
-    # Stops the live recording, applies the new codec/driver to every recorder
-    # adapter, then restarts. Takes ~2 s; runs on a background thread (see
-    # SettingsApi.apply_encoder_now).
+
+def _make_restart_recording_cb(
+    recording_service: Optional[RecordingService], settings: Settings
+) -> Callable[[str, str], None]:
+    """Build the "apply encoder now" callback (shared, C2).
+
+    Stops the live recording, applies the new codec/driver to every recorder
+    adapter, then restarts. Takes ~2 s; runs on a background thread (see
+    SettingsApi.apply_encoder_now).
+    """
+
     def _restart_recording(codec: str, driver: str) -> None:
         if recording_service is None:
             return
@@ -471,11 +526,16 @@ def main() -> None:
         else:
             logger.info("Recording was stopped — not restarting (autorecord=off).")
 
-    api.settings.set_restart_encoder_cb(_restart_recording)
+    return _restart_recording
 
-    # ── Live autorecord toggle (shared, C2) ────────────────────────────
-    # IT records optionally: the stack is built but parked.  Toggling the
-    # setting starts/stops the existing workers in-process (no restart).
+
+def _make_autorecord_cb(recording_service: Optional[RecordingService]) -> Callable[[bool], None]:
+    """Build the live autorecord-toggle callback (shared, C2).
+
+    IT records optionally: the stack is built but parked.  Toggling the
+    setting starts/stops the existing workers in-process (no restart).
+    """
+
     def _apply_autorecord(enabled: bool) -> None:
         if recording_service is None:
             return
@@ -486,35 +546,141 @@ def main() -> None:
             recording_service.stop()
             logger.info("Autorecord disabled — recording stopped.")
 
-    api.settings.set_autorecord_cb(_apply_autorecord)
+    return _apply_autorecord
+
+
+def _make_stop_backend_cb(
+    backend: RecordingBackend,
+    detection_service: MonitorDetectionService,
+    req_server: Optional[ClipRequestServer],
+    req_client: Optional[ClipRequestClient],
+    preview_server: Optional[MjpegPreviewServerAdapter],
+) -> Callable[[], None]:
+    """Build the full-backend teardown callback (stops FFmpeg, no orphans — TD-3)."""
 
     def _stop_backend() -> None:
-        """Stop the whole recording stack — kills FFmpeg, no orphans (TD-3)."""
-        if auto_event_service is not None:
-            auto_event_service.stop()
-        if batch_analyzer is not None:
-            batch_analyzer.stop()
-        if health_service is not None:
-            health_service.stop()
+        if backend.auto_event_service is not None:
+            backend.auto_event_service.stop()
+        if backend.batch_analyzer is not None:
+            backend.batch_analyzer.stop()
+        if backend.health_service is not None:
+            backend.health_service.stop()
         detection_service.stop()
-        if disk_monitor is not None:
-            disk_monitor.stop()
-        if event_service is not None:
-            event_service.stop()
-        if recording_service is not None:
-            recording_service.stop()
-        for b in per_monitor_builders.values():
+        if backend.disk_monitor is not None:
+            backend.disk_monitor.stop()
+        if backend.event_service is not None:
+            backend.event_service.stop()
+        if backend.recording_service is not None:
+            backend.recording_service.stop()
+        for b in backend.per_monitor_builders.values():
             b.shutdown()
-        if combined_builder is not None:
-            combined_builder.shutdown()
-        if recording_service is not None:
+        if backend.combined_builder is not None:
+            backend.combined_builder.shutdown()
+        if backend.recording_service is not None:
             get_telemetry().stop()
-        if _req_server is not None:
-            _req_server.stop()
-        if _req_client is not None:
-            _req_client.stop()
-        if _preview_server is not None:
-            _preview_server.stop()
+        if req_server is not None:
+            req_server.stop()
+        if req_client is not None:
+            req_client.stop()
+        if preview_server is not None:
+            preview_server.stop()
+
+    return _stop_backend
+
+
+def _wire_hot_plug(
+    detection_service: MonitorDetectionService,
+    backend: RecordingBackend,
+    api: ApiLayer,
+) -> None:
+    """Wire hot-plug monitor add/remove without a UI bridge."""
+    recording_service = backend.recording_service
+    if recording_service is not None and backend.build_worker_for is not None:
+        def _hot_add(monitor: MonitorInfo) -> None:
+            w = backend.build_worker_for(monitor)
+            w.segment_dir.mkdir(parents=True, exist_ok=True)
+            recording_service.add_worker(w)
+            w.set_on_recording_failed(api.recording.on_recording_failed)
+        detection_service._on_monitor_added   = _hot_add                         # noqa: SLF001
+        detection_service._on_monitor_removed = recording_service.remove_worker  # noqa: SLF001
+
+
+def main() -> None:
+    # Peek the role before the lock so an operator box exits 0 (no dialog) on a
+    # benign contention — its restart watchdog must not read that as a crash.
+    _instance_lock = _acquire_single_instance_lock(operator_silent=_peek_role() == OPERATOR)
+    # Set by the role-change relaunch callback; checked after app.exec() returns
+    # so the existing teardown runs once before we spawn the replacement.
+    _relaunch_flag = {"requested": False}
+    _register_ffmpeg_cleanup()
+
+    settings, segment_compiler = _bootstrap_logging_and_settings()
+    user_config_port, user_config, clips_dir = _load_user_config_and_clips_dir(settings)
+    _enforce_role_and_configure_encoder(user_config, settings)
+
+    logger.info("The Watcher starting...")
+    logger.info(
+        "Config: segment_dir={} clips_dir={} retention={}h segment_duration={}s",
+        settings.segment_dir,
+        clips_dir,
+        settings.retention_hours,
+        settings.segment_duration,
+    )
+    _warn_if_default_it_pin(settings)
+
+    raw_clips_dir, event_clips_dir = _prepare_directories(settings, clips_dir)
+
+    # ── Infrastructure ────────────────────────────────────────────────
+    storage = FilesystemStorageAdapter()
+
+    detection_service, all_monitors = _detect_monitors(user_config)
+
+    # ── Recording stack (skipped for Supervisor role) ────────────────
+    # Built by the shared, Qt-free factory so the headless daemon/sidecar
+    # (ADR-0010) construct the same backend. Unpacked into locals so the rest
+    # of the Qt startup below is unchanged.
+    backend = build_recording_backend(
+        settings=settings,
+        user_config=user_config,
+        storage=storage,
+        all_monitors=all_monitors,
+        clips_dir=clips_dir,
+        raw_clips_dir=raw_clips_dir,
+        event_clips_dir=event_clips_dir,
+        segment_compiler=segment_compiler,
+    )
+    recording_service = backend.recording_service
+
+    preview_server = _start_recording_services(backend, user_config, detection_service, settings)
+    _recover_startup_clips(backend, settings)
+
+    inspector, player_service, editor_export, cloud_share_service = _build_player_editor_services(
+        segment_compiler, settings
+    )
+
+    api = _build_api(
+        detection_service=detection_service,
+        settings=settings,
+        user_config_port=user_config_port,
+        backend=backend,
+        player_service=player_service,
+        editor_export=editor_export,
+        inspector=inspector,
+        cloud_share_service=cloud_share_service,
+        clips_dir=clips_dir,
+        event_clips_dir=event_clips_dir,
+        preview_server=preview_server,
+    )
+
+    req_server, req_client = _wire_request_system(user_config, settings, api)
+    _wire_failure_callbacks(backend, api)
+
+    api.settings.set_restart_encoder_cb(_make_restart_recording_cb(recording_service, settings))
+    api.settings.set_autorecord_cb(_make_autorecord_cb(recording_service))
+
+    _stop_backend = _make_stop_backend_cb(
+        backend, detection_service, req_server, req_client, preview_server
+    )
 
     # ── Role-conditional topology (ADR-0010): headless daemon / sidecar ──
     # Operator = --daemon (decoupled, survives the Tauri window closing);
@@ -525,15 +691,7 @@ def main() -> None:
     from app.adapters.ipc.router import IpcRouter                # noqa: PLC0415
     from app.runtime.headless import HeadlessRuntime             # noqa: PLC0415
 
-    # Hot-plug wiring without a UI bridge: add/remove recording workers.
-    if recording_service is not None and backend.build_worker_for is not None:
-        def _hot_add(monitor: MonitorInfo) -> None:
-            w = backend.build_worker_for(monitor)
-            w.segment_dir.mkdir(parents=True, exist_ok=True)
-            recording_service.add_worker(w)
-            w.set_on_recording_failed(api.recording.on_recording_failed)
-        detection_service._on_monitor_added   = _hot_add                         # noqa: SLF001
-        detection_service._on_monitor_removed = recording_service.remove_worker  # noqa: SLF001
+    _wire_hot_plug(detection_service, backend, api)
 
     pipe_server = NamedPipeIpcServer(IpcRouter(api), api.bus)
     runtime = HeadlessRuntime(api, pipe_server, on_stop=_stop_backend)

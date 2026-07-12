@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -47,12 +47,14 @@ class ClipsApi:
         *,
         event_bus: EventBus,
         clips_dir: Path,
+        event_clips_dir: Optional[Path] = None,
         player_service=None,
         file_browser: Optional[FileBrowserPort] = None,
         mp4_converter: Optional[Mp4ConverterPort] = None,
     ) -> None:
         self._bus = event_bus
         self._clips_dir = Path(clips_dir)
+        self._event_clips_dir = Path(event_clips_dir) if event_clips_dir else None
         self._player = player_service
         self._browser = file_browser
         self._converter = mp4_converter
@@ -61,15 +63,21 @@ class ClipsApi:
     # ── Clip listing ──────────────────────────────────────────────────
 
     def list_clips(self, limit: int = 100) -> List[dto.ClipDTO]:
-        """List clips in the output folder, newest first (mirrors refreshClips)."""
-        clips: List[dto.ClipDTO] = []
-        if not self._clips_dir.exists():
-            return clips
-        files = sorted(
-            self._clips_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True
-        )
+        """List clips across the combined + event folders, newest first (mirrors refreshClips)."""
+        sources: List[tuple[Path, bool]] = [(self._clips_dir, False)]
+        if self._event_clips_dir is not None:
+            sources.append((self._event_clips_dir, True))
+
+        files: List[tuple[Path, bool]] = []
+        for directory, from_events_dir in sources:
+            if not directory.exists():
+                continue
+            files.extend((f, from_events_dir) for f in directory.glob("*.mp4"))
+        files.sort(key=lambda item: item[0].stat().st_mtime, reverse=True)
+
         today = datetime.now().date()
-        for f in files[:limit]:
+        clips: List[dto.ClipDTO] = []
+        for f, from_events_dir in files[:limit]:
             mtime = datetime.fromtimestamp(f.stat().st_mtime)
             date_label = self._date_label(mtime.date(), today)
             size_mb = f.stat().st_size / (1024 * 1024)
@@ -79,7 +87,7 @@ class ClipsApi:
                     path=str(f),
                     size_label=f"{size_mb:.0f} MB",
                     date_label=date_label,
-                    is_event="_event" in f.stem,
+                    is_event=from_events_dir or "_event" in f.stem,
                 )
             )
         return clips
@@ -92,7 +100,7 @@ class ClipsApi:
 
     @staticmethod
     def _date_label(day, today) -> str:
-        yesterday = today.replace(day=today.day - 1) if today.day > 1 else today
+        yesterday = today - timedelta(days=1)
         if day == today:
             return "Hoy"
         if day == yesterday:
@@ -144,6 +152,8 @@ class ClipsApi:
             return str(self._clips_dir)
         if path == "LOCAL_RAW":
             return str(self._clips_dir.parent / "clips_raw")
+        if path == "LOCAL_EVENTS":
+            return str(self._event_clips_dir) if self._event_clips_dir else ""
         return path
 
     # ── On-demand transcode (TD-1: WebView2 has no software HEVC decoder) ─

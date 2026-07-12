@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("win32pipe")
 
+from app.adapters.ipc import security
 from app.adapters.ipc.pipe_client import NamedPipeIpcClient
 from app.adapters.ipc.pipe_server import NamedPipeIpcServer
 from app.adapters.ipc.router import IpcRouter
@@ -120,3 +121,27 @@ def test_unknown_command_over_pipe(server_and_client) -> None:
     _server, client, _layer = server_and_client
     resp = client.call("bogus_cmd")
     assert resp["ok"] is False and "unknown command" in resp["error"]
+
+
+def test_start_fails_closed_when_security_attributes_build_fails(monkeypatch) -> None:
+    """Regression (ADR-0011 fail-open fix): a broken SDDL build must abort
+    start() instead of silently falling back to the pipe's default (unscoped)
+    Windows DACL — see pipe_server.py's start()/_run()."""
+
+    def _boom():
+        raise RuntimeError("SDDL build failed")
+
+    monkeypatch.setattr(security, "make_security_attributes", _boom)
+
+    layer = build_api_layer(
+        detection_service=FakeDetection(),
+        settings=FakeSettings(),
+        user_config_port=FakeUserConfigPort(),
+        recording_service=FakeRecording(),
+    )
+    router = IpcRouter(layer)
+    server = NamedPipeIpcServer(router, layer.bus, pipe_name=_unique_pipe_name())
+
+    with pytest.raises(RuntimeError, match="SDDL build failed"):
+        server.start()
+    assert server.is_bound() is False

@@ -24,6 +24,8 @@ Documentación completa de la transición de la UI de The Watcher desde **PySide
 | [How-to — Portar un puerto a Rust (PyO3)](howto-port-to-rust.md) | How-to | Mover un driven port a Rust con tests de paridad (Track R) |
 | [Deuda técnica y buenas prácticas](tech-debt-and-best-practices.md) | Reference | Tecnologías (con estado de mantenimiento), buenas prácticas por área, registro de deuda técnica/footguns — de la investigación `/deep-research` |
 | [Optimización del pipeline FFmpeg](ffmpeg-pipeline-optimization-research.md) | Reference | Investigación `/deep-research` 2026-07-05: zero-copy D3D11→QSV (−66% CPU medido), gobernanza de subprocesos (Job Objects), alternativas (Rust/GStreamer/libobs), matriz de decisión y plan de PoC |
+| [Track R2 — Baseline del harness de benchmark](track-r2-baseline.md) | Reference | Harness de bench + medición full-scale (20 min steady-state, crashes/stalls/churn) — input empírico del gate ADR-0007/ADR-0017 |
+| [Track R2 — Spike ctypes vs Rust (M2a)](track-r2-m2a-decision.md) | Explanation | Resultados del spike que compara `ctypes`/`CreateProcessW` puro contra un crate Rust para el guard de Job Object — decisión de bifurcación pendiente de input del usuario |
 
 **Decisiones técnicas (ADRs)** — registro en [`../editing/adr/`](../editing/adr/README.md):
 

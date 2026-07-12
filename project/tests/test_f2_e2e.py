@@ -4,16 +4,17 @@ Integration test — Fase 2 (R-AI): detect → AnalyticEvent → EventStore + si
 Proves the full pipeline end-to-end without FFmpeg or a real model:
     MockDetectorAdapter
         → AutoEventService (threshold + cooldown)
-            → _on_auto_event callback
-                → EventStorePort.add()          (marker)
-                → ClipBuilder.snapshot_event()  (same call as manual events)
-                → ClipBuilder.build()           (stubbed, returns instantly)
-                → write_sidecar()               (JSON sidecar next to clip)
+            → _on_auto_event callback (mirrors app.runtime.backend's wiring)
+                → EventStorePort.add()             (marker)
+                → build-coalescing gate            (skips redundant overlapping builds)
+                → ClipBuilder.snapshot_event()      (same call as manual events)
+                → EventService.schedule_clip_build() (retry + logging, same as manual events)
+                → write_sidecar()                   (JSON sidecar next to clip)
 """
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 from unittest.mock import MagicMock, patch
@@ -23,8 +24,9 @@ import pytest
 from app.adapters.ml.mock_detector import MockDetectorAdapter
 from app.adapters.storage.sqlite_event_store import SqliteEventStoreAdapter
 from app.core.analytics.models import AnalyticEvent
-from app.core.analytics.sidecar import read_sidecar, sidecar_path
+from app.core.analytics.sidecar import read_sidecar, sidecar_path, write_sidecar
 from app.core.auto_event_service import AutoEventService
+from app.core.event_service import EventService
 from app.core.recording_service.models import EventContext, MonitorInfo
 
 _T0 = datetime(2026, 6, 22, 12, 0, 0, tzinfo=timezone.utc)
@@ -39,7 +41,6 @@ def _fake_monitor() -> MonitorInfo:
 
 
 def _fake_ctx(triggered_at: datetime) -> EventContext:
-    from datetime import timedelta
     return EventContext(
         event_id=triggered_at.strftime("%H%M%S"),
         triggered_at=triggered_at,
@@ -47,6 +48,50 @@ def _fake_ctx(triggered_at: datetime) -> EventContext:
         window_end=triggered_at + timedelta(seconds=120),
         monitors=(_fake_monitor(),),
     )
+
+
+class _AutoEventRouter:
+    """Mirrors app.runtime.backend._on_auto_event: persists the marker, coalesces
+    redundant clip-build scheduling, and routes the actual build through
+    EventService.schedule_clip_build() so it gets the same retry/logging as a
+    manual event instead of a bespoke unhandled Timer."""
+
+    def __init__(
+        self,
+        store: SqliteEventStoreAdapter,
+        clip_builder: MagicMock,
+        event_service: EventService,
+        min_build_interval: timedelta = timedelta(0),
+    ) -> None:
+        self._store = store
+        self._clip_builder = clip_builder
+        self._event_service = event_service
+        self._min_build_interval = min_build_interval
+        self._lock = threading.Lock()
+        self._last_build_at: Optional[datetime] = None
+
+    def __call__(self, event: AnalyticEvent) -> None:
+        self._store.add(event)
+
+        with self._lock:
+            if (
+                self._last_build_at is not None
+                and event.start - self._last_build_at < self._min_build_interval
+            ):
+                return
+            self._last_build_at = event.start
+
+        ctx = self._clip_builder.snapshot_event(event.start)
+
+        def _persist(_ctx: EventContext, output: Path) -> None:
+            updated = event.model_copy(update={"clip_path": output})
+            self._store.add(updated)
+            try:
+                write_sidecar(output, [updated])
+            except OSError:
+                pass
+
+        self._event_service.schedule_clip_build(ctx, on_built=_persist)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -108,7 +153,7 @@ class TestF2Pipeline:
     def test_clip_build_triggered_with_snapshot(
         self, store: SqliteEventStoreAdapter, tmp_path: Path
     ) -> None:
-        """on_auto_event must call snapshot_event() then schedule build() via Timer."""
+        """on_auto_event must call snapshot_event() then schedule build() via EventService."""
         detector = MockDetectorAdapter(confidence=0.9)
 
         # Stub ClipBuilder: snapshot_event() returns a context, build() returns a fake path.
@@ -120,32 +165,18 @@ class TestF2Pipeline:
         clip_builder.snapshot_event.return_value = _fake_ctx(_T0)
         clip_builder.build.return_value = fake_clip
 
-        # Build the same _on_auto_event closure as in backend.py
         build_done = threading.Event()
+        clip_builder.build.side_effect = lambda ctx: (build_done.set(), fake_clip)[1]
 
-        def _on_auto_event(event: AnalyticEvent) -> None:
-            store.add(event)
-            ctx = clip_builder.snapshot_event(event.start)
+        # post_seconds=0 so the timer fires immediately in tests
+        event_service = EventService(clip_builder=clip_builder, post_seconds=0, cooldown_seconds=0)
+        on_auto_event = _AutoEventRouter(store, clip_builder, event_service)
 
-            def _build_auto_clip() -> None:
-                output = clip_builder.build(ctx)
-                if output:
-                    updated = event.model_copy(update={"clip_path": output})
-                    store.add(updated)
-                    from app.core.analytics.sidecar import write_sidecar
-                    write_sidecar(output, [updated])
-                build_done.set()
-
-            # post_seconds=0 to run immediately in tests
-            t = threading.Timer(0, _build_auto_clip)
-            t.daemon = True
-            t.start()
-
-        svc = AutoEventService(detector, _on_auto_event, confidence_threshold=0.6, cooldown_seconds=0)
+        svc = AutoEventService(detector, on_auto_event, confidence_threshold=0.6, cooldown_seconds=0)
         svc.start()
         detector.analyze(b"fake_frame", _META)
 
-        build_done.wait(timeout=2.0)
+        assert build_done.wait(timeout=2.0)
 
         # snapshot_event() and build() were each called once; timestamp is the detection time
         clip_builder.snapshot_event.assert_called_once()
@@ -165,30 +196,19 @@ class TestF2Pipeline:
         clip_builder.snapshot_event.return_value = _fake_ctx(_T0)
         clip_builder.build.return_value = fake_clip
 
-        build_done = threading.Event()
+        event_service = EventService(clip_builder=clip_builder, post_seconds=0, cooldown_seconds=0)
+        on_auto_event = _AutoEventRouter(store, clip_builder, event_service)
 
-        def _on_auto_event(event: AnalyticEvent) -> None:
-            store.add(event)
-            ctx = clip_builder.snapshot_event(event.start)
-
-            def _build_auto_clip() -> None:
-                output = clip_builder.build(ctx)
-                if output:
-                    updated = event.model_copy(update={"clip_path": output})
-                    store.add(updated)
-                    from app.core.analytics.sidecar import write_sidecar
-                    write_sidecar(output, [updated])
-                build_done.set()
-
-            t = threading.Timer(0, _build_auto_clip)
-            t.daemon = True
-            t.start()
-
-        svc = AutoEventService(detector, _on_auto_event, confidence_threshold=0.6, cooldown_seconds=0)
+        svc = AutoEventService(detector, on_auto_event, confidence_threshold=0.6, cooldown_seconds=0)
         svc.start()
         detector.analyze(b"fake_frame", _META)
 
-        build_done.wait(timeout=2.0)
+        # Poll for the sidecar instead of a fixed sleep — build runs on a Timer thread.
+        deadline = threading.Event()
+        for _ in range(200):
+            if sidecar_path(fake_clip).exists():
+                break
+            deadline.wait(0.01)
 
         # Sidecar must exist and contain the event
         sc_events = read_sidecar(fake_clip)
@@ -215,30 +235,97 @@ class TestF2Pipeline:
         clip_builder.snapshot_event.return_value = _fake_ctx(_T0)
         clip_builder.build.return_value = fake_clip
 
-        build_done = threading.Event()
+        event_service = EventService(clip_builder=clip_builder, post_seconds=0, cooldown_seconds=0)
+        on_auto_event = _AutoEventRouter(store, clip_builder, event_service)
 
-        def _on_auto_event(event: AnalyticEvent) -> None:
-            store.add(event)
-            ctx = clip_builder.snapshot_event(event.start)
-
-            def _build_auto_clip() -> None:
-                output = clip_builder.build(ctx)
-                if output:
-                    updated = event.model_copy(update={"clip_path": output})
-                    store.add(updated)
-                    from app.core.analytics.sidecar import write_sidecar
-                    write_sidecar(output, [updated])
-                build_done.set()
-
-            t = threading.Timer(0, _build_auto_clip)
-            t.daemon = True
-            t.start()
-
-        svc = AutoEventService(detector, _on_auto_event, confidence_threshold=0.6, cooldown_seconds=0)
+        svc = AutoEventService(detector, on_auto_event, confidence_threshold=0.6, cooldown_seconds=0)
         svc.start()
         detector.analyze(b"fake_frame", _META)
 
-        build_done.wait(timeout=2.0)
+        deadline = threading.Event()
+        for _ in range(200):
+            if len(store.query()) == 1 and store.query()[0].clip_path is not None:
+                break
+            deadline.wait(0.01)
 
         # INSERT OR REPLACE means same event_id → only ONE row in the store
         assert len(store.query()) == 1
+
+
+class TestAutoEventBuildCoalescing:
+    """Fix for the "sobreesfuerzo" bug: continuous detections used to each
+    schedule their own full multi-monitor clip re-encode (30s event cooldown
+    vs. a 4-minute clip window meant up to 8 heavily-overlapping builds for a
+    single visit). A new clip BUILD is now only scheduled once per
+    min_build_interval, independent of how often the event itself fires."""
+
+    def test_rapid_events_schedule_only_one_build(
+        self, store: SqliteEventStoreAdapter, tmp_path: Path
+    ) -> None:
+        fake_clip = tmp_path / "clips" / "event.mp4"
+        fake_clip.parent.mkdir(parents=True, exist_ok=True)
+        fake_clip.write_bytes(b"FAKE_MP4")
+
+        clip_builder = MagicMock()
+        clip_builder.snapshot_event.side_effect = _fake_ctx
+        clip_builder.build.return_value = fake_clip
+
+        event_service = EventService(clip_builder=clip_builder, post_seconds=0, cooldown_seconds=0)
+        on_auto_event = _AutoEventRouter(
+            store, clip_builder, event_service, min_build_interval=timedelta(seconds=240)
+        )
+
+        # Three events 30s apart — same pattern as the reported logs (person
+        # re-detected every ~30s while the clip window is 240s wide).
+        on_auto_event(AnalyticEvent(
+            event_id="1", type="person", source="auto:yolo",
+            start=_T0, end=_T0, confidence=0.9,
+        ))
+        on_auto_event(AnalyticEvent(
+            event_id="2", type="person", source="auto:yolo",
+            start=_T0 + timedelta(seconds=30), end=_T0, confidence=0.9,
+        ))
+        on_auto_event(AnalyticEvent(
+            event_id="3", type="person", source="auto:yolo",
+            start=_T0 + timedelta(seconds=60), end=_T0, confidence=0.9,
+        ))
+
+        import time
+        time.sleep(0.2)
+
+        # All three markers are still persisted for analytics/timeline...
+        assert len(store.query()) == 3
+        # ...but only the FIRST one triggered a clip build.
+        clip_builder.snapshot_event.assert_called_once()
+        clip_builder.build.assert_called_once()
+
+    def test_event_past_min_interval_schedules_new_build(
+        self, store: SqliteEventStoreAdapter, tmp_path: Path
+    ) -> None:
+        fake_clip = tmp_path / "clips" / "event.mp4"
+        fake_clip.parent.mkdir(parents=True, exist_ok=True)
+        fake_clip.write_bytes(b"FAKE_MP4")
+
+        clip_builder = MagicMock()
+        clip_builder.snapshot_event.side_effect = _fake_ctx
+        clip_builder.build.return_value = fake_clip
+
+        event_service = EventService(clip_builder=clip_builder, post_seconds=0, cooldown_seconds=0)
+        on_auto_event = _AutoEventRouter(
+            store, clip_builder, event_service, min_build_interval=timedelta(seconds=240)
+        )
+
+        on_auto_event(AnalyticEvent(
+            event_id="1", type="person", source="auto:yolo",
+            start=_T0, end=_T0, confidence=0.9,
+        ))
+        on_auto_event(AnalyticEvent(
+            event_id="2", type="person", source="auto:yolo",
+            start=_T0 + timedelta(seconds=241), end=_T0, confidence=0.9,
+        ))
+
+        import time
+        time.sleep(0.2)
+
+        assert clip_builder.snapshot_event.call_count == 2
+        assert clip_builder.build.call_count == 2

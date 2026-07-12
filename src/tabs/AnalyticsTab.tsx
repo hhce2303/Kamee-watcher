@@ -47,9 +47,16 @@ function CountsChart({ counts }: { counts: CountByClass[] }) {
 
     ctx.clearRect(0, 0, W, H);
 
+    // Canvas 2D `font` does not resolve CSS custom properties — read the
+    // real font-family value once so the chart doesn't silently fall back
+    // to the browser default.
+    const fontFamily =
+      getComputedStyle(document.documentElement).getPropertyValue("--font-sans").trim() ||
+      "sans-serif";
+
     if (counts.length === 0) {
       ctx.fillStyle = "#475569";
-      ctx.font      = "13px var(--font-sans)";
+      ctx.font      = `13px ${fontFamily}`;
       ctx.textAlign = "center";
       ctx.fillText("No detections in this window", W / 2, H / 2);
       return;
@@ -65,7 +72,7 @@ function CountsChart({ counts }: { counts: CountByClass[] }) {
     // Y-axis labels
     const steps = 4;
     ctx.fillStyle = "#64748b";
-    ctx.font      = "11px var(--font-sans)";
+    ctx.font      = `11px ${fontFamily}`;
     ctx.textAlign = "right";
     for (let i = 0; i <= steps; i++) {
       const val = Math.round((maxCount / steps) * i);
@@ -101,14 +108,14 @@ function CountsChart({ counts }: { counts: CountByClass[] }) {
       // Count label on top of bar
       if (barH > 16) {
         ctx.fillStyle  = "rgba(0,0,0,0.6)";
-        ctx.font       = "bold 11px var(--font-sans)";
+        ctx.font       = `bold 11px ${fontFamily}`;
         ctx.textAlign  = "center";
         ctx.fillText(String(c.count), x + barW / 2, y + 14);
       }
 
       // Class label below bar
       ctx.fillStyle  = "#94a3b8";
-      ctx.font       = "11px var(--font-sans)";
+      ctx.font       = `11px ${fontFamily}`;
       ctx.textAlign  = "center";
       ctx.fillText(
         c.class_name.length > 8 ? c.class_name.slice(0, 7) + "…" : c.class_name,

@@ -23,5 +23,7 @@ cambia, se crea un ADR nuevo que la *supersede*.
 | [0015](ADR-0015-batch-ffmpeg-governance.md) | Gobernanza de FFmpeg batch: Job Object compartido + semáforo + telemetría (PoC-2) | Aceptado |
 | [0016](ADR-0016-recorder-supervision-ctypes-not-rust.md) | Supervisión del recorder: fix ctypes en vez de crate Rust (Track R2 M2-M4 diferidos) | Aceptado |
 | [0017](ADR-0017-adr0007-sla-verdict-confirmed.md) | Gate 0007 resuelto: CPU de captura confirmada dentro de SLA, Track R3 no se activa | Aceptado |
+| [0018](ADR-0018-go-liveview-relay-escalation-deferred.md) | Go como ruta de escalación para el relay de `LiveViewPort`: diferido (Python ahora) | Diferido |
+| [0019](ADR-0019-auto-event-clip-build-coalescing.md) | Auto-eventos: build de clip por EventService (retry+logging) + coalescencia de ventana (fix sobreesfuerzo) | Aceptado |
 
 ADR-0008..0012 son la migración de UI a Tauri 2.0 — ver [`docs/migration/`](../../migration/README.md).

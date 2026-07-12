@@ -22,7 +22,10 @@ from app.core.api.events import EventBus
 from app.core.api.recording_api import RecordingApi
 from app.core.api.requests_api import RequestsApi
 from app.core.api.settings_api import SettingsApi
+from app.core.cloud_share_service import CloudShareService
+from app.core.event_service import EventService
 from app.core.monitor_detection.service import MonitorDetectionService
+from app.core.player.player_service import PlayerService
 from app.core.ports.analytics_query_port import AnalyticsQueryPort
 from app.core.ports.audit_port import AuditPort
 from app.core.ports.clip_inspector_port import ClipInspectorPort
@@ -31,6 +34,8 @@ from app.core.ports.file_browser_port import FileBrowserPort
 from app.core.ports.mp4_converter_port import Mp4ConverterPort
 from app.core.ports.preview_server_port import PreviewServerPort
 from app.core.ports.user_config_port import UserConfigPort
+from app.core.recording_service.service import RecordingService
+from app.infrastructure.config import Settings
 
 
 @dataclass
@@ -57,18 +62,19 @@ class ApiLayer:
 def build_api_layer(
     *,
     detection_service: MonitorDetectionService,
-    settings,
+    settings: Settings,
     user_config_port: UserConfigPort,
     audit_port: Optional[AuditPort] = None,
-    recording_service=None,
-    event_service=None,
-    player_service=None,
+    recording_service: Optional[RecordingService] = None,
+    event_service: Optional[EventService] = None,
+    player_service: Optional[PlayerService] = None,
     export_port: Optional[EditorExportPort] = None,
     inspector: Optional[ClipInspectorPort] = None,
     file_browser: Optional[FileBrowserPort] = None,
     mp4_converter: Optional[Mp4ConverterPort] = None,
-    cloud_share_service=None,
+    cloud_share_service: Optional[CloudShareService] = None,
     clips_dir: Optional[Path] = None,
+    event_clips_dir: Optional[Path] = None,
     slc_storage_host: str = "",
     onedrive_base_folder: str = "SLC/clips-supervisor",
     relaunch_cb: Optional[Callable[[], None]] = None,
@@ -112,6 +118,7 @@ def build_api_layer(
         clips=ClipsApi(
             event_bus=bus,
             clips_dir=clips_dir or Path("."),
+            event_clips_dir=event_clips_dir,
             player_service=player_service,
             file_browser=file_browser,
             mp4_converter=mp4_converter,

@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from app.adapters.ffmpeg.clip_window import parse_clip_start as _shared_parse_clip_start
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
 from app.adapters.ffmpeg.process_guard import assign_to_batch_job, batch_slot
 from app.core.analytics.models import AnalyticEvent, Detection
@@ -193,12 +194,10 @@ def _parse_clip_start(clip_path: Path) -> datetime:
 
     Falls back to UTC now if the name cannot be parsed.
     """
-    stem = clip_path.stem  # e.g. "2026-07-04_12-00-00_m0"
-    parts = stem.split("_")
-    try:
-        # parts[0] = "2026-07-04", parts[1] = "12-00-00"
-        dt_str = f"{parts[0]}T{parts[1].replace('-', ':')}"
-        return datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
-    except (IndexError, ValueError):
-        logger.warning("[batch-analyzer] cannot parse start time from '{}' — using now", stem)
+    parsed = _shared_parse_clip_start(clip_path)
+    if parsed is None:
+        logger.warning(
+            "[batch-analyzer] cannot parse start time from '{}' — using now", clip_path.stem
+        )
         return datetime.now(tz=timezone.utc)
+    return parsed

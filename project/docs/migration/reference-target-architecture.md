@@ -91,6 +91,27 @@ Orden = prioridad de migración a Rust. Binding = **PyO3 in-process** durante la
 | 4 | `StoragePort`/`EventStorePort`/`UserConfigPort` | filesystem/sqlite/json | `tokio::fs` / `rusqlite` / `serde_json` |
 | 5 | `RequestPort` + `adapters/ws` | `JsonRequestAdapter` + WS | `tokio-tungstenite` |
 | último | `CloudSharePort` | `LocalShareAdapter`/`OneDriveGraphAdapter` | `reqwest`+MS Graph o queda plugin/HTTP |
+| **sin secuenciar** | `LiveViewPort` *(nuevo, post-migración)* | sesión/token/auditoría + rama de encode H.264 sobre el pipeline FFmpeg existente, canal WS binario cifrado (`wss://`) | **Por decidir** — no está en el orden R1-R4 de ADR-0012; Go fue evaluado y diferido como ruta de escalación, ver [ADR-0018](../editing/adr/ADR-0018-go-liveview-relay-escalation-deferred.md) |
+
+### `LiveViewPort` — extensión post-migración (2026-07-12)
+
+Feature nueva, no parte de la migración Tauri original: Supervisor obtiene vista en vivo,
+solo-lectura, LAN-only, de la pantalla de un Operador (paridad con el acceso que IT ya
+tiene vía TeamViewer). Sigue el mismo patrón Facade/DTO de ADR-0009 (`LiveViewApi` nuevo,
+espejo de `RequestsApi`). Diseño completo (premisas, alternativas evaluadas, revisiones
+adversariales de arquitectura/seguridad/tests) en la sesión `/office-hours` + `/autoplan`
+del 2026-07-12, rama `feat/f1-backend-headless`. Puntos clave para quien retome esto:
+
+- **No está secuenciado en el roadmap Track R** (ADR-0012) — antes de asignarle una
+  prioridad de port-a-Rust, confirmar con el owner de Track R si esto compite o no con
+  el trabajo ya en curso (Track R2).
+- **Prerequisito bloqueante antes de rollout a la flota real** (no antes de implementar):
+  política de "quién puede ver a quién" — ver TODOS.md, ítem 9. La arquitectura/DTO puede
+  avanzar con un placeholder; el rollout no.
+- **Gate técnico dentro del prototipo de 48h**: confirmar si una falla en la rama de
+  live-view puede tumbar el proceso de grabación completo (`recorder_adapter.py` corre
+  UN proceso FFmpeg por monitor) — determina si el esfuerzo estimado (L) es correcto o
+  si hace falta un diseño de proceso separado.
 
 ## Fases (orden estricto)
 

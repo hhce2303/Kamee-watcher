@@ -1,6 +1,7 @@
 """ClipsApi facade — clip listing, load metadata, and token-resolved browsing."""
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -58,14 +59,35 @@ class FakeConverter:
         return out
 
 
-def _api(tmp_path, player=None, browser=None, converter=None):
+def _api(tmp_path, player=None, browser=None, converter=None, event_clips_dir=None):
     return ClipsApi(
         event_bus=EventBus(),
         clips_dir=tmp_path / "clips",
+        event_clips_dir=event_clips_dir,
         player_service=player,
         file_browser=browser,
         mp4_converter=converter,
     )
+
+
+def test_date_label_yesterday_across_month_boundary() -> None:
+    # Regression test: today.replace(day=today.day - 1) used to break on the
+    # 1st of the month, making "yesterday" collapse to "today" and losing the
+    # "Ayer" label for the real previous day.
+    today = date(2026, 7, 1)
+    assert ClipsApi._date_label(date(2026, 6, 30), today) == "Ayer"
+    assert ClipsApi._date_label(today, today) == "Hoy"
+
+
+def test_date_label_yesterday_across_year_boundary() -> None:
+    today = date(2026, 1, 1)
+    assert ClipsApi._date_label(date(2025, 12, 31), today) == "Ayer"
+
+
+def test_date_label_yesterday_mid_month() -> None:
+    today = date(2026, 7, 15)
+    assert ClipsApi._date_label(date(2026, 7, 14), today) == "Ayer"
+    assert ClipsApi._date_label(date(2026, 7, 13), today) not in ("Hoy", "Ayer")
 
 
 def test_list_clips_newest_first_with_labels(tmp_path) -> None:
@@ -84,6 +106,35 @@ def test_list_clips_newest_first_with_labels(tmp_path) -> None:
 
 def test_list_clips_missing_dir_returns_empty(tmp_path) -> None:
     assert _api(tmp_path).list_clips() == []
+
+
+def test_list_clips_scans_both_dirs_with_directory_based_is_event(tmp_path) -> None:
+    combined_dir = tmp_path / "clips"
+    combined_dir.mkdir()
+    events_dir = tmp_path / "clips_events"
+    events_dir.mkdir()
+    (combined_dir / "2026-07-03_00-00-00.mp4").write_bytes(b"x" * 1_000_000)
+    (events_dir / "2026-07-03_00-05-00.mp4").write_bytes(b"y" * 500_000)
+
+    api = _api(tmp_path, event_clips_dir=events_dir)
+    clips = api.list_clips()
+
+    assert len(clips) == 2
+    by_name = {c.clip_name: c for c in clips}
+    assert by_name["2026-07-03_00-00-00.mp4"].is_event is False
+    # is_event is True purely because the file lives under event_clips_dir —
+    # no "_event" substring in this filename.
+    assert by_name["2026-07-03_00-05-00.mp4"].is_event is True
+
+
+def test_list_clips_without_event_clips_dir_falls_back_to_substring(tmp_path) -> None:
+    d = tmp_path / "clips"
+    d.mkdir()
+    (d / "2026-07-03_event.mp4").write_bytes(b"x" * 1_000_000)
+    api = _api(tmp_path)  # no event_clips_dir configured
+    clips = api.list_clips()
+    assert len(clips) == 1
+    assert clips[0].is_event is True
 
 
 def test_publish_clips_emits_event(tmp_path) -> None:
@@ -133,6 +184,21 @@ def test_list_directory_resolves_local_raw_token(tmp_path) -> None:
     api = _api(tmp_path, browser=browser)
     api.list_directory(dto.ListDirectory(path="LOCAL_RAW"))
     assert browser.last_path == str(tmp_path / "clips_raw")
+
+
+def test_list_directory_resolves_local_events_token(tmp_path) -> None:
+    browser = FakeBrowser()
+    events_dir = tmp_path / "clips_events"
+    api = _api(tmp_path, browser=browser, event_clips_dir=events_dir)
+    api.list_directory(dto.ListDirectory(path="LOCAL_EVENTS"))
+    assert browser.last_path == str(events_dir)
+
+
+def test_list_directory_local_events_token_empty_when_unconfigured(tmp_path) -> None:
+    browser = FakeBrowser()
+    api = _api(tmp_path, browser=browser)  # no event_clips_dir
+    api.list_directory(dto.ListDirectory(path="LOCAL_EVENTS"))
+    assert browser.last_path == ""
 
 
 def test_list_directory_passthrough(tmp_path) -> None:

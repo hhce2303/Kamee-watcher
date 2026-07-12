@@ -87,7 +87,7 @@ class EventService:
             now.isoformat(),
             len(ctx.monitors),
         )
-        self._schedule_clip_build(ctx)
+        self.schedule_clip_build(ctx)
         return True
 
     @property
@@ -117,11 +117,27 @@ class EventService:
     # Scheduling
     # ------------------------------------------------------------------
 
-    def _schedule_clip_build(self, ctx: EventContext) -> None:
+    def schedule_clip_build(
+        self,
+        ctx: EventContext,
+        on_built: Optional[Callable[["EventContext", Path], None]] = None,
+    ) -> None:
+        """
+        Schedule a clip build ``post_seconds`` from now, with retry-on-failure
+        and success/error logging.
+
+        Public so callers outside the cooldown-gated manual flow — namely
+        the automatic detection pipeline (``AutoEventService`` via
+        ``backend._on_auto_event``) — get the same error handling and
+        logging instead of a bespoke ad-hoc timer that silently drops
+        exceptions. ``on_built`` overrides the constructor's
+        ``on_clip_built`` for this one build (auto-events persist
+        differently than manual ones).
+        """
         timer = threading.Timer(
             self._post_seconds,
             self._execute_clip_build,
-            args=(ctx, 1),
+            args=(ctx, 1, on_built),
         )
         timer.daemon = True
         timer.start()
@@ -134,15 +150,21 @@ class EventService:
             ctx.triggered_at.isoformat(),
         )
 
-    def _execute_clip_build(self, ctx: EventContext, attempt: int = 1) -> None:
+    def _execute_clip_build(
+        self,
+        ctx: EventContext,
+        attempt: int = 1,
+        on_built: Optional[Callable[["EventContext", Path], None]] = None,
+    ) -> None:
         log = logger.bind(phase="BUILD-EVENT", evt=ctx.event_id)
+        callback = on_built if on_built is not None else self._on_clip_built
         try:
             output = self._clip_builder.build(ctx)
             if output:
                 log.info("Clip created: {}", output)
-                if self._on_clip_built is not None:
+                if callback is not None:
                     try:
-                        self._on_clip_built(ctx, output)
+                        callback(ctx, output)
                     except Exception:  # noqa: BLE001
                         log.exception("on_clip_built callback raised (ignored).")
             else:
@@ -151,16 +173,21 @@ class EventService:
                     ctx.triggered_at.isoformat(),
                     attempt,
                 )
-                self._schedule_retry(ctx, attempt)
+                self._schedule_retry(ctx, attempt, on_built)
         except Exception:
             log.exception(
                 "Unexpected error building clip for event at {} (attempt {}).",
                 ctx.triggered_at.isoformat(),
                 attempt,
             )
-            self._schedule_retry(ctx, attempt)
+            self._schedule_retry(ctx, attempt, on_built)
 
-    def _schedule_retry(self, ctx: EventContext, attempt: int) -> None:
+    def _schedule_retry(
+        self,
+        ctx: EventContext,
+        attempt: int,
+        on_built: Optional[Callable[["EventContext", Path], None]] = None,
+    ) -> None:
         log = logger.bind(phase="BUILD-EVENT", evt=ctx.event_id)
         max_retries = 3
         if attempt >= max_retries:
@@ -190,7 +217,7 @@ class EventService:
         timer = threading.Timer(
             self._retry_delay_seconds,
             self._execute_clip_build,
-            args=(ctx, next_attempt),
+            args=(ctx, next_attempt, on_built),
         )
         timer.daemon = True
         timer.start()

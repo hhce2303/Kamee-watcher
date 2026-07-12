@@ -146,6 +146,66 @@ clear trigger to pick it up.
   `project/app/adapters/preview_server/mjpeg_server_adapter.py:99-120`.
 - **Depends on:** —
 
+## LiveViewPort — deferred policy prerequisite (2026-07-12)
+Captured during `/office-hours` + `/autoplan` review of "Live LAN Screen Viewing for
+Supervisors" (branch `feat/f1-backend-headless`). Deferred to keep architecture/
+implementation work moving; has a clear trigger and a hard gate before rollout.
+
+### 9. "Who can view whom" authorization policy for `LiveViewPort`
+- **What:** Define which Supervisor may request to view which Operator, under what
+  condition (e.g., any Supervisor↔any Operator, or scoped by site/team) — even a
+  deliberately simple placeholder rule. Confirmed during Eng review that this codebase
+  has zero identity-to-identity authorization plumbing today: `RequestsApi.send_clip_request`
+  accepts any `operator` string with no cross-check, and `UserConfig.role` is a flat
+  string (operator/supervisor/it), not a permission graph.
+- **Why:** The session-token schema for `LiveViewPort` (`operator_id`, `supervisor_id`,
+  `monitor_index`, ...) cannot be authorization-checked without this rule existing
+  somewhere. Deferring it lets the port/Facade/DTO/session-token architecture and
+  implementation proceed now (Approach B, see design doc), but it is a **hard
+  prerequisite before `LiveViewPort` is enabled on the real fleet** — an explicit,
+  logged placeholder rule (even "any Supervisor may view any Operator") must land
+  before rollout, not after.
+- **Pros:** Unblocks implementation of the port/Facade/DTO/session-token layer now
+  without waiting on an org policy conversation.
+- **Cons:** Ships an authorization no-op if this is never resolved before rollout —
+  any Supervisor can watch any Operator with no rule to point to. This is the single
+  named risk both the CEO review and Eng review flagged independently during
+  `/autoplan`.
+- **Context:** Design doc + full review history:
+  `~/.gstack/projects/hhce2303-The-Watcher/hcruz--feat-f1-backend-headless-design-20260712-132557.md`.
+  Architecture pointer: `project/docs/migration/reference-target-architecture.md`
+  (`LiveViewPort` section). Go-as-escalation-path decision:
+  [ADR-0018](project/docs/editing/adr/ADR-0018-go-liveview-relay-escalation-deferred.md).
+- **Depends on:** whoever owns Operator/IT/Supervisor role definitions landing at least
+  a placeholder rule before rollout to the real fleet.
+
+## Repo audit remediation — pending decisions (2026-07-12)
+Captured during Milestone 1 of the post-audit remediation plan
+(branch `feat/f1-backend-headless`). Deferred to keep M1 unblocked; each has a
+clear trigger to pick it up.
+
+### 10. Decide the real fix for the default `IT_PIN`
+- **What:** `IT_PIN` still defaults to `"1234"` (`app/infrastructure/config.py`,
+  `it_pin` field). M1 only added a loud startup warning
+  (`main.py::_warn_if_default_it_pin`) when the PIN is unchanged — it does
+  **not** change behavior. Someone needs to decide the actual fix:
+  (a) remove the default entirely (requires adding a `None`/empty check in
+  `SettingsApi.unlock_it()` — today there is none, so an unset PIN would
+  silently and permanently fail every unlock attempt), or
+  (b) keep a default but force a first-run "set your IT PIN" step, or
+  (c) accept the warning-only fix as sufficient for now.
+- **Why:** Removing the default outright without a `None`-check first is a
+  regression, not a fix — it trades a weak-but-working PIN for a silent
+  permanent lockout. This needs a deliberate choice, not a reflexive "just
+  delete the default."
+- **Pros:** Closes the actual security gap (weak, well-known default PIN)
+  instead of just logging about it.
+- **Cons:** Any option beyond the warning touches the IT unlock UX and
+  deserves a quick sign-off before implementation.
+- **Context:** `app/infrastructure/config.py:170` (field), `app/core/api/settings_api.py`
+  (`unlock_it()`, sole consumer). Only consumer confirmed via repo-wide grep.
+- **Depends on:** whoever owns the IT-unlock UX flow.
+
 ## Completed
 
 ### Track R2 — recorder supervision: ctypes orphan-fix, M1 clip-engine quick win, M5 hardening
