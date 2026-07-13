@@ -10,6 +10,7 @@ build & install — lives in **[`project/README.md`](project/README.md)**.
 
 ## Quick links
 
+- [**Onboarding**](ONBOARDING.md) — setup, dev mode, the 3 test suites, lint/CI, one path start to finish
 - [Product README](project/README.md) — architecture, configuration, build & install
 - [Migration docs](project/docs/migration/README.md) — QML/PySide6 → Tauri 2.0 + React,
   Python core → Rust hexagon (Track R)
@@ -27,5 +28,4 @@ scripts/    Dev tooling (DTO codegen, etc.)
 ```
 
 For setup instructions (Python venv, Rust toolchain, `npm install`, running in dev
-mode, and the three test suites), see the "Build & Install" section of
-[`project/README.md`](project/README.md).
+mode, and the three test suites), see **[`ONBOARDING.md`](ONBOARDING.md)**.

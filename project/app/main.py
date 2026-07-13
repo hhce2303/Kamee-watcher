@@ -110,16 +110,29 @@ def _acquire_single_instance_lock(operator_silent: bool = False) -> object:
         logger.info("Another instance already running (operator) — exiting quietly.")
         sys.exit(0)
 
-    import tkinter, tkinter.messagebox  # noqa: PLC0415
+    # This exit was always deterministic (sys.exit(1) either way) — what was
+    # missing was that it left zero trace, because configure_logging() hadn't
+    # run yet when this fired. Log first, so the CRITICAL line lands even if
+    # the dialog below can't render (no desktop/session, ImportError, etc.).
+    logger.critical(
+        "Single-instance mutex already held after 3s of retry (pid={}) — "
+        "another Watcher process is already running; refusing to start a "
+        "second one.",
+        os.getpid(),
+    )
     try:
+        import tkinter, tkinter.messagebox  # noqa: PLC0415
         root = tkinter.Tk(); root.withdraw()
         tkinter.messagebox.showerror(
             "The Watcher",
             "Another instance is already running.\nClose it before starting a new one.",
         )
         root.destroy()
-    except Exception:
-        pass
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Could not show the 'already running' dialog (no desktop/session?) "
+            "— see the CRITICAL line above."
+        )
     sys.exit(1)
 
 
@@ -164,9 +177,12 @@ def _warn_if_default_it_pin(settings) -> None:
         )
 
 
-def _bootstrap_logging_and_settings() -> tuple[Settings, SegmentCompilerPort]:
-    """Configure logging, load settings, and build the shared segment compiler."""
-    configure_logging()
+def _load_settings_and_compiler() -> tuple[Settings, SegmentCompilerPort]:
+    """Load settings and build the shared segment compiler.
+
+    Logging is configured separately, as the very first statement of main()
+    — before the single-instance lock — so any early exit on that path is
+    always recorded (see _acquire_single_instance_lock's docstring)."""
     settings = get_settings()
     # Rust segment engine when available, FFmpeg fallback otherwise (ADR-0006).
     # Constructed once here (not per-use) so build_recording_backend()'s clip
@@ -606,6 +622,10 @@ def _wire_hot_plug(
 
 
 def main() -> None:
+    # Configure logging FIRST — before anything that can exit early, the
+    # single-instance lock included — so every startup path, even a failed
+    # one, leaves a trace in watcher.log.
+    configure_logging()
     # Peek the role before the lock so an operator box exits 0 (no dialog) on a
     # benign contention — its restart watchdog must not read that as a crash.
     _instance_lock = _acquire_single_instance_lock(operator_silent=_peek_role() == OPERATOR)
@@ -614,7 +634,7 @@ def main() -> None:
     _relaunch_flag = {"requested": False}
     _register_ffmpeg_cleanup()
 
-    settings, segment_compiler = _bootstrap_logging_and_settings()
+    settings, segment_compiler = _load_settings_and_compiler()
     user_config_port, user_config, clips_dir = _load_user_config_and_clips_dir(settings)
     _enforce_role_and_configure_encoder(user_config, settings)
 

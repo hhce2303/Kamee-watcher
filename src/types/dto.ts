@@ -201,6 +201,25 @@ export interface OneDriveFailedEvent {
   message: string;
 }
 
+// Private OneDrive save (IT role) — separate event family from
+// OneDriveChanged/OneDriveFailed on purpose; see dto.py's comment above the
+// Python originals for why (OutputPanel/useOutputPanel/ITHealthChips already
+// share that 4-state enum with Supervisor).
+export interface OneDriveSaveStartedEvent {
+  event: "onedrive_save_started";
+}
+
+export interface OneDriveSavedEvent {
+  event: "onedrive_saved";
+  folder_path: string;
+  output_path: string;
+}
+
+export interface OneDriveSaveFailedEvent {
+  event: "onedrive_save_failed";
+  message: string;
+}
+
 export interface RequestReceivedEvent {
   event: "request_received";
 }
@@ -271,6 +290,9 @@ export interface BackendEventMap {
   export_failed: ExportFailedEvent;
   onedrive_changed: OneDriveChangedEvent;
   onedrive_failed: OneDriveFailedEvent;
+  onedrive_save_started: OneDriveSaveStartedEvent;
+  onedrive_saved: OneDriveSavedEvent;
+  onedrive_save_failed: OneDriveSaveFailedEvent;
   request_received: RequestReceivedEvent;
   request_status_changed: RequestStatusChangedEvent;
   role_changed: RoleChangedEvent;

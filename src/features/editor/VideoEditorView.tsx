@@ -50,7 +50,7 @@ export default function VideoEditorView({ defaultOutputPath }: VideoEditorViewPr
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", border: "1px solid var(--border-base)", borderRadius: "var(--r-md)", overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, height: 40, padding: "0 14px", borderBottom: "1px solid var(--border-base)", background: "var(--bg-elevated)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, height: 40, flexShrink: 0, padding: "0 14px", borderBottom: "1px solid var(--border-base)", background: "var(--bg-elevated)" }}>
         <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "1.2px" }}>REEL</span>
         <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
           {entries.length} clip{entries.length !== 1 ? "s" : ""} · {totalDuration.toFixed(1)}s
@@ -63,8 +63,9 @@ export default function VideoEditorView({ defaultOutputPath }: VideoEditorViewPr
         <div style={{ width: 260, flexShrink: 0, overflow: "auto", padding: 10, borderRight: "1px solid var(--border-base)" }}>
           <EditorTimeline entries={entries} selected={selected} onSelect={setSelected} onRemove={handleRemove} onMove={actions.move} />
         </div>
-        <div style={{ flex: 1, padding: 14, overflow: "auto" }}>
+        <div style={{ flex: 1, padding: 14, overflow: "auto", display: "flex", flexDirection: "column", minHeight: 0 }}>
           <EditorTransport
+            key={selectedEntry?.source_path ?? "none"}
             entry={selectedEntry}
             onTrim={(inS, outS) => selected !== null && void actions.trim(selected, inS, outS)}
             videoRef={videoRef}

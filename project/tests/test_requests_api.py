@@ -100,6 +100,52 @@ def test_send_clip_request_persists_and_sends() -> None:
     assert len(client.sent) == 1
 
 
+def test_send_clip_request_rejects_unknown_operator_when_browser_configured() -> None:
+    """Minimal identity sanity check: operator/storage must be a real NAS pair
+    when a file browser is configured — not an arbitrary client-supplied string."""
+    shares = [BrowseEntry(name="Storage1", path=r"\\NAS\Storage1", is_dir=True)]
+    ops = [BrowseEntry(name="Op-1", path="p1", is_dir=True)]
+    port = FakeRequestPort()
+    client = FakeClient()
+    api = _api(
+        request_port=port,
+        client=client,
+        file_browser=FakeBrowser(shares=shares, operators=ops),
+        slc_storage_host=r"\\NAS",
+    )
+    payload = json.dumps({
+        "operator": "Someone-Made-Up", "storage": "Storage1",
+        "start_time": "2026-07-03 10:00", "end_time": "2026-07-03 10:05",
+        "description": "incident",
+    })
+
+    assert api.send_clip_request(dto.SendClipRequest(request_json=payload)) is False
+    assert port.saved == []
+    assert client.sent == []
+
+
+def test_send_clip_request_accepts_known_operator_when_browser_configured() -> None:
+    shares = [BrowseEntry(name="Storage1", path=r"\\NAS\Storage1", is_dir=True)]
+    ops = [BrowseEntry(name="Op-28", path="p1", is_dir=True)]
+    port = FakeRequestPort()
+    client = FakeClient()
+    api = _api(
+        request_port=port,
+        client=client,
+        file_browser=FakeBrowser(shares=shares, operators=ops),
+        slc_storage_host=r"\\NAS",
+    )
+    payload = json.dumps({
+        "operator": "Op-28", "storage": "Storage1",
+        "start_time": "2026-07-03 10:00", "end_time": "2026-07-03 10:05",
+        "description": "incident",
+    })
+
+    assert api.send_clip_request(dto.SendClipRequest(request_json=payload)) is True
+    assert len(port.saved) == 1
+    assert len(client.sent) == 1
+
+
 def test_send_clip_request_invalid_json() -> None:
     port = FakeRequestPort()
     api = _api(request_port=port)

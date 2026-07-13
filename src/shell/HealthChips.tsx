@@ -1,6 +1,7 @@
 import { useAppStore } from "../stores/appStore";
 import { useMediaRoots } from "../hooks/useMediaRoots";
 import { useOutputPanel } from "../hooks/useOutputPanel";
+import { usePrivateSave } from "../hooks/usePrivateSave";
 
 type Tone = "ok" | "warn" | "error";
 
@@ -29,10 +30,19 @@ export function ITHealthChips() {
   const ipcConnected = useAppStore((s) => s.ipcConnected);
   const role = useAppStore((s) => s.settings?.role);
   const { roots, error: nasError } = useMediaRoots();
-  const { state: odState } = useOutputPanel();
+  const { state: odLinkState } = useOutputPanel();
+  const { state: odSaveState } = usePrivateSave();
 
   const nasTone: Tone = nasError ? "error" : roots ? "ok" : "warn";
-  const odTone: Tone = odState === "error" ? "error" : odState === "linked" || odState === "working" ? "ok" : "warn";
+  // IT's editor now saves via PrivateSavePanel (odSaveState), not OutputPanel
+  // (odLinkState) — combine both so this chip still reflects a successful
+  // private save, not just the link-sharing flow Supervisor still uses.
+  const odTone: Tone =
+    odLinkState === "error" || odSaveState === "error"
+      ? "error"
+      : odLinkState === "linked" || odLinkState === "working" || odSaveState === "working" || odSaveState === "saved"
+        ? "ok"
+        : "warn";
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 14 }}>

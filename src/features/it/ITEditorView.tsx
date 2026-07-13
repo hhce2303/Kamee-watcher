@@ -6,7 +6,7 @@ import { useEditorTimeline } from "../../hooks/useEditorTimeline";
 import { useSettingsForm } from "../../hooks/useSettingsForm";
 import ClipBrowser from "../clips/ClipBrowser";
 import VideoEditorView from "../editor/VideoEditorView";
-import OutputPanel from "../delivery/OutputPanel";
+import PrivateSavePanel from "../delivery/PrivateSavePanel";
 import RecordingView from "../recording/RecordingView";
 import SettingsView from "../settings/SettingsView";
 import ITInboxPanel from "./ITInboxPanel";
@@ -94,11 +94,15 @@ export default function ITEditorView() {
           ))}
         </nav>
 
-        <main style={{ flex: 1, overflow: "auto", padding: 20, minWidth: 0 }}>
-          {view === "cola" && <ITInboxPanel onOpen={openRequestInEditor} />}
+        <main style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", padding: 20, minWidth: 0 }}>
+          {view === "cola" && (
+            <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+              <ITInboxPanel onOpen={openRequestInEditor} />
+            </div>
+          )}
 
           {view === "editor" && (
-            <div style={{ display: "flex", gap: 14, height: "100%" }}>
+            <div style={{ display: "flex", gap: 14, flex: 1, minHeight: 0 }}>
               <div style={{ width: "30%", display: "flex", flexDirection: "column", gap: 8 }}>
                 <button type="button" onClick={() => void loadFilesIntoReel()} style={loadFilesBtnStyle}>
                   + Cargar videos
@@ -109,20 +113,32 @@ export default function ITEditorView() {
                   <ClipBrowser onPlay={(path) => void editor.actions.addFiles([path])} />
                 </div>
               </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
                 <VideoEditorView defaultOutputPath="reel.mp4" />
               </div>
-              <div style={{ width: 280, flexShrink: 0 }}>
-                <OutputPanel />
+              <div style={{ width: 280, flexShrink: 0, overflowY: "auto" }}>
+                <PrivateSavePanel />
               </div>
             </div>
           )}
 
-          {view === "grabacion" && <RecordingView />}
+          {view === "grabacion" && (
+            <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+              <RecordingView />
+            </div>
+          )}
 
-          {view === "entregas" && <DeliveredList requests={requests.filter((r) => r.status === "done")} />}
+          {view === "entregas" && (
+            <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+              <DeliveredList requests={requests.filter((r) => r.status === "done")} />
+            </div>
+          )}
 
-          {view === "ajustes" && (itUnlocked ? <SettingsView /> : <AjustesPinGate />)}
+          {view === "ajustes" && (
+            <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+              {itUnlocked ? <SettingsView /> : <AjustesPinGate />}
+            </div>
+          )}
         </main>
       </div>
     </div>

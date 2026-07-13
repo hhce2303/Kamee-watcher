@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import Modal from "../../components/Modal";
 import WSeg from "../../components/WSeg";
 
@@ -24,6 +24,15 @@ export default function AnnotationModal({ eventTimecode, onSaved, onSkipped }: A
   const [tag, setTag] = useState("");
   const [severity, setSeverity] = useState<string>("medium");
   const [note, setNote] = useState("");
+  const tagInputRef = useRef<HTMLInputElement>(null);
+
+  // Move focus into the dialog on open (WAI-ARIA dialog practice) — done via
+  // an effect + ref rather than the `autoFocus` prop so eslint-plugin-jsx-a11y
+  // doesn't flag it as page-load autofocus, which this isn't: the modal only
+  // appears as a direct result of the user marking an event.
+  useEffect(() => {
+    tagInputRef.current?.focus();
+  }, []);
 
   function save() {
     onSaved(tag.trim() || "sin etiqueta", severity, note);
@@ -41,7 +50,7 @@ export default function AnnotationModal({ eventTimecode, onSaved, onSkipped }: A
 
         <FormField label="ETIQUETA">
           <input
-            autoFocus
+            ref={tagInputRef}
             value={tag}
             onChange={(e) => setTag(e.target.value)}
             placeholder="ej. crash en checkout"

@@ -356,6 +356,25 @@ class OneDriveFailed(BaseEvent):
     message: str
 
 
+# Private OneDrive save (IT role) — a separate event family from OneDriveChanged
+# on purpose: OneDriveChanged/OneDriveFailed are shared by OutputPanel (IT +
+# Supervisor) and the IT health chip, so extending that 4-state enum would force
+# touching both consumers for a flow that never mints a share link.
+class OneDriveSaveStarted(BaseEvent):
+    event: Literal["onedrive_save_started"] = "onedrive_save_started"
+
+
+class OneDriveSaved(BaseEvent):
+    event: Literal["onedrive_saved"] = "onedrive_saved"
+    folder_path: str
+    output_path: str
+
+
+class OneDriveSaveFailed(BaseEvent):
+    event: Literal["onedrive_save_failed"] = "onedrive_save_failed"
+    message: str
+
+
 class RequestReceived(BaseEvent):
     event: Literal["request_received"] = "request_received"
 

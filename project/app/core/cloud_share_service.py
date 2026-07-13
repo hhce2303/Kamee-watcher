@@ -46,6 +46,27 @@ class CloudShareService:
             created=created,
         )
 
+    def ensure_folder(self, folder_path: str) -> str:
+        """Search for ``folder_path`` (creating it and any missing parents if
+        absent) and return the normalized path — never mint a link.
+
+        Deliberately never calls ``create_share_link``/``web_url``: this is the
+        entry point for a "private, no link" save, so a future real
+        ``OneDriveGraphAdapter`` must never be asked to grant a share permission
+        on this path.
+        """
+        normalized = self._normalize(folder_path)
+        if not normalized:
+            raise ValueError("folder_path must not be empty")
+
+        created = self._port.ensure_folder(normalized)
+        logger.info(
+            "CloudShare: folder '{}' {} (private, no link).",
+            normalized,
+            "created" if created else "reused",
+        )
+        return normalized
+
     @staticmethod
     def _normalize(folder_path: str) -> str:
         """Collapse separators and strip surrounding whitespace/slashes so that

@@ -75,22 +75,27 @@ export default function RecordingView() {
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "var(--sp-6)", minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-5)" }}>
-          <div
-            style={{
-              width: 12,
-              height: 12,
-              borderRadius: "50%",
-              background: state.is_recording ? "var(--accent-record)" : "var(--text-dim)",
-            }}
-          />
-          <span style={{ fontWeight: 600, fontSize: 15 }}>
-            {state.is_recording ? `Grabando — ${fmtTimecode(state.record_seconds)}` : "Inactivo"}
-          </span>
+          <div role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)" }}>
+            <div
+              aria-hidden="true"
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: "50%",
+                background: state.is_recording ? "var(--accent-record)" : "var(--text-dim)",
+              }}
+            />
+            <span style={{ fontWeight: 600, fontSize: 15 }}>
+              {state.is_recording ? `Grabando — ${fmtTimecode(state.record_seconds)}` : "Inactivo"}
+            </span>
+          </div>
           <div style={{ flex: 1 }} />
           <button
             type="button"
             onClick={actions.toggleRecording}
             disabled={busy}
+            aria-pressed={state.is_recording}
+            aria-label={state.is_recording ? "Detener grabación" : "Iniciar grabación"}
             style={{
               padding: "6px 18px",
               borderRadius: "var(--r-sm)",
@@ -128,6 +133,7 @@ export default function RecordingView() {
             </span>
             <button
               type="button"
+              aria-label={copied ? "URL copiada al portapapeles" : "Copiar URL de la vista previa"}
               onClick={() => {
                 navigator.clipboard.writeText(previewServer.stream_url_template.replace("{index}", "0"));
                 setCopied(true);
@@ -154,7 +160,7 @@ export default function RecordingView() {
       </div>
 
       {isIt && inboxOpen && (
-        <aside style={{ width: 320, flexShrink: 0 }}>
+        <aside style={{ width: 320, flexShrink: 0, display: "flex", flexDirection: "column", height: "100%" }}>
           <ITInboxPanel />
         </aside>
       )}

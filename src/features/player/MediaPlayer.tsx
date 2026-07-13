@@ -60,13 +60,16 @@ export default function MediaPlayer({ path }: MediaPlayerProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption -- desktop-capture
+          footage has no dialogue/narration track to caption; this is a review
+          player (TD-7), not a content-consumption player. */}
       <video
         ref={videoRef}
         key={activePath}
         src={clipUrl(activePath)}
         controls
         onError={handleError}
-        style={{ width: "100%", maxHeight: "70vh", background: "#000", borderRadius: "var(--r-md)" }}
+        style={{ width: "100%", maxHeight: "70vh", background: "var(--video-bg)", borderRadius: "var(--r-md)" }}
       />
       <button type="button" onClick={handleFullscreen} style={{ ...actionBtnStyle, alignSelf: "flex-start" }}>
         Pantalla completa

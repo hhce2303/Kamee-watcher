@@ -7,6 +7,7 @@ AuditPort recording them.
 from __future__ import annotations
 
 from app.adapters.ipc.router import IpcRouter
+from app.core.api import dto
 from app.core.api.bootstrap import build_api_layer
 from app.core.recording_service.models import MonitorInfo
 
@@ -144,7 +145,7 @@ def test_bad_payload_returns_error_not_crash() -> None:
 def test_commands_cover_all_facades() -> None:
     cmds = IpcRouter(_layer()).commands
     for expected in ("get_monitors", "set_role", "list_clips", "list_storages",
-                     "export_timeline", "ensure_folder_and_link",
+                     "export_timeline", "ensure_folder_and_link", "save_reel_privately",
                      "get_settings", "get_media_roots", "set_autostart"):
         assert expected in cmds
 
@@ -200,6 +201,23 @@ def test_reset_onedrive_via_ipc() -> None:
     router = IpcRouter(_layer())
     resp = router.handle({"id": "14", "cmd": "reset_onedrive"})
     assert resp["ok"] is True
+
+
+def test_save_reel_privately_via_ipc_without_service_reports_failure_event() -> None:
+    # _layer() wires no cloud_share_service — the command itself never raises
+    # (mirrors export_timeline's pattern: failures are event-driven, not thrown).
+    layer = _layer()
+    events: list[object] = []
+    layer.bus.subscribe(dto.OneDriveSaveFailed, events.append)
+
+    resp = IpcRouter(layer).handle(
+        {"id": "16", "cmd": "save_reel_privately", "payload": {"folder_path": "a/b"}}
+    )
+    layer.bus.drain()
+
+    assert resp["ok"] is True
+    assert len(events) == 1
+    assert "OneDrive" in events[0].message
 
 
 def test_transcode_clip_via_ipc_no_converter(tmp_path) -> None:

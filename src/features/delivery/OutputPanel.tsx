@@ -3,7 +3,7 @@ import { useOutputPanel } from "../../hooks/useOutputPanel";
 
 const STATE_COLOR: Record<string, string> = {
   idle: "var(--text-dim)",
-  working: "#60A5FA",
+  working: "var(--accent-cloud)",
   linked: "var(--accent-ok)",
   error: "var(--accent-record)",
 };
@@ -23,8 +23,8 @@ export default function OutputPanel() {
   return (
     <div style={{ border: "1px solid var(--border-base)", borderRadius: "var(--r-md)", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, height: 44, padding: "0 18px", borderBottom: "1px solid var(--border-base)" }}>
-        <span style={{ color: "#60A5FA" }}>☁</span>
-        <span style={{ color: "#60A5FA", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, letterSpacing: "1.6px" }}>
+        <span style={{ color: "var(--accent-cloud)" }}>☁</span>
+        <span style={{ color: "var(--accent-cloud)", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, letterSpacing: "1.6px" }}>
           ONEDRIVE · ENTREGA
         </span>
         <div style={{ flex: 1 }} />

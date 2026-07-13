@@ -20,11 +20,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
-$VenvPython = Join-Path $ScriptDir "venv\Scripts\python.exe"
+# The venv lives OUTSIDE the repo (%LOCALAPPDATA%), same convention as
+# run.ps1/setup_env.ps1 — it contains machine-specific absolute paths/binaries
+# and must not be synced between PCs (or, previously, looked for inside the
+# repo where setup_env.ps1 never actually creates it).
+$VenvPython = Join-Path $env:LOCALAPPDATA "The Watcher\venv\Scripts\python.exe"
 $MainPy     = Join-Path $ScriptDir "app\main.py"
 
 if (-not (Test-Path $VenvPython)) {
-    Write-Error "Dev venv not found at $VenvPython. Run: python -m venv venv && venv\Scripts\pip install -r requirements.txt"
+    Write-Error "Dev venv not found at $VenvPython. Run: .\setup_env.ps1 (from the repo root)."
 }
 
 if (-not (Test-Path $MainPy)) {

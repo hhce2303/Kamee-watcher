@@ -139,6 +139,8 @@ export const computeFolderPath = () =>
 export const ensureFolderAndLink = (folderPath = "") =>
   ipcSend<ShareResultDTO>("ensure_folder_and_link", { folder_path: folderPath });
 export const resetOnedrive = () => ipcSend<null>("reset_onedrive");
+export const saveReelPrivately = (folderPath = "") =>
+  ipcSend<null>("save_reel_privately", { folder_path: folderPath });
 
 // ── Analytics (F5) ───────────────────────────────────────────────────
 

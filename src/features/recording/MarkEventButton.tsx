@@ -10,13 +10,14 @@ export default function MarkEventButton({ onClick, disabled }: MarkEventButtonPr
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-label="Marcar evento"
       style={{
         height: 44,
         padding: "0 28px",
         borderRadius: "var(--r-md)",
         background: "var(--accent-record)",
         border: "none",
-        color: "#fff",
+        color: "var(--text-on-accent)",
         fontFamily: "var(--font-sans)",
         fontSize: 14,
         fontWeight: 700,

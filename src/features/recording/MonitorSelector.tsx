@@ -52,6 +52,9 @@ export default function MonitorSelector({ monitors, onToggle, showHeader = true 
         <button
           key={m.fingerprint}
           type="button"
+          role="checkbox"
+          aria-checked={m.selected}
+          aria-label={`${m.name} (${m.resolution})`}
           onClick={() => onToggle(m.fingerprint)}
           style={{
             display: "flex",
@@ -68,6 +71,7 @@ export default function MonitorSelector({ monitors, onToggle, showHeader = true 
           }}
         >
           <span
+            aria-hidden="true"
             style={{
               width: 18,
               height: 18,

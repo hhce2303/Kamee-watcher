@@ -97,3 +97,125 @@ def test_reset_onedrive_clears_linked_state(tmp_path) -> None:
 
     assert len(events) == 1
     assert (events[0].state, events[0].folder, events[0].link) == ("idle", "", "")
+
+
+class FakeEditor:
+    """Stands in for EditorApi's export surface — completes inline/synchronously
+    (like _run_export_async swapped for _do_export in test_facade_editor.py) so
+    these tests stay deterministic without a background thread."""
+
+    def __init__(self, bus: EventBus, fail: bool = False) -> None:
+        self._bus = bus
+        self.exporting = False
+        self.fail = fail
+        self.exported_to = None
+
+    def export_timeline(self, output_path: str) -> None:
+        self.exported_to = output_path
+        if self.fail:
+            self._bus.publish(dto.ExportFailed(message="boom"))
+        else:
+            self._bus.publish(dto.ExportFinished(output_path=output_path))
+
+
+def _api_with_editor(tmp_path, fail: bool = False):
+    bus = EventBus()
+    editor = FakeEditor(bus, fail=fail)
+    api = DeliveryApi(
+        event_bus=bus,
+        cloud_share_service=_svc(tmp_path),
+        export_fn=editor.export_timeline,
+        is_exporting=lambda: editor.exporting,
+    )
+    return bus, api, editor
+
+
+class TestSaveReelPrivately:
+    def test_success_ensures_folder_exports_and_publishes_saved(self, tmp_path) -> None:
+        bus, api, editor = _api_with_editor(tmp_path)
+        events: list[object] = []
+        bus.subscribe(dto.OneDriveSaveStarted, events.append)
+        bus.subscribe(dto.OneDriveSaved, events.append)
+
+        api.save_reel_privately("SLC/clips-supervisor/2026-07")
+        bus.drain()
+
+        assert isinstance(events[0], dto.OneDriveSaveStarted)
+        assert isinstance(events[-1], dto.OneDriveSaved)
+        assert events[-1].folder_path == "SLC/clips-supervisor/2026-07"
+        assert events[-1].output_path == editor.exported_to
+        assert (tmp_path / "od" / "SLC" / "clips-supervisor" / "2026-07").is_dir()
+
+    def test_never_publishes_a_link(self, tmp_path) -> None:
+        bus, api, _editor = _api_with_editor(tmp_path)
+        linked: list[object] = []
+        bus.subscribe(dto.OneDriveChanged, linked.append)
+
+        api.save_reel_privately("a/b")
+        bus.drain()
+
+        assert linked == []
+
+    def test_rejects_when_export_already_running(self, tmp_path) -> None:
+        bus, api, editor = _api_with_editor(tmp_path)
+        editor.exporting = True
+        fails: list[object] = []
+        bus.subscribe(dto.OneDriveSaveFailed, fails.append)
+
+        api.save_reel_privately("a/b")
+        bus.drain()
+
+        assert len(fails) == 1
+        assert "exportación en curso" in fails[0].message
+        assert not (tmp_path / "od" / "a" / "b").exists()  # never got as far as ensuring the folder
+
+    def test_maps_export_failure_to_save_failed(self, tmp_path) -> None:
+        bus, api, _editor = _api_with_editor(tmp_path, fail=True)
+        fails: list[object] = []
+        bus.subscribe(dto.OneDriveSaveFailed, fails.append)
+
+        api.save_reel_privately("a/b")
+        bus.drain()
+
+        assert len(fails) == 1
+        assert fails[0].message == "boom"
+
+    def test_folder_error_is_reported_without_touching_export(self, tmp_path) -> None:
+        bus, api, editor = _api_with_editor(tmp_path)
+        fails: list[object] = []
+        bus.subscribe(dto.OneDriveSaveFailed, fails.append)
+
+        api.save_reel_privately("   ///   ")  # normalizes to empty -> ValueError in the service
+        bus.drain()
+
+        assert len(fails) == 1
+        assert editor.exported_to is None
+
+    def test_unrelated_export_finished_is_ignored(self, tmp_path) -> None:
+        bus, api, _editor = _api_with_editor(tmp_path)
+        saved: list[object] = []
+        bus.subscribe(dto.OneDriveSaved, saved.append)
+
+        # A plain export from ExportDialog, not started via save_reel_privately.
+        bus.publish(dto.ExportFinished(output_path="/some/other/path.mp4"))
+        bus.drain()
+
+        assert saved == []
+
+    def test_no_service_reports_failure_event_not_an_exception(self, tmp_path) -> None:
+        bus = EventBus()
+        editor = FakeEditor(bus)
+        api = DeliveryApi(
+            event_bus=bus,
+            cloud_share_service=None,
+            export_fn=editor.export_timeline,
+            is_exporting=lambda: editor.exporting,
+        )
+        fails: list[object] = []
+        bus.subscribe(dto.OneDriveSaveFailed, fails.append)
+
+        api.save_reel_privately("a/b")  # must not raise
+        bus.drain()
+
+        assert len(fails) == 1
+        assert editor.exported_to is None

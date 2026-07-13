@@ -52,6 +52,7 @@ function SideEntry({ icon, label, active, onClick }: { icon: string; label: stri
   return (
     <button
       type="button"
+      aria-current={active ? "true" : undefined}
       onClick={onClick}
       style={{
         display: "flex",
@@ -105,28 +106,24 @@ function Toolbar({
           overflow: "hidden",
         }}
       >
-        <span
-          onClick={onRoot}
-          style={{ color: navStack.length === 0 ? "var(--text-primary)" : "var(--accent-primary)", cursor: "pointer" }}
-        >
+        <button type="button" onClick={onRoot} style={crumbBtnStyle(navStack.length === 0)}>
           ⊛ Red
-        </span>
+        </button>
         {navStack.map((c, i) => (
           <span key={c.path} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ color: "var(--text-dim)" }}>›</span>
-            <span
+            <span style={{ color: "var(--text-dim)" }} aria-hidden="true">›</span>
+            <button
+              type="button"
+              disabled={i === navStack.length - 1}
               onClick={() => i < navStack.length - 1 && onCrumb(i)}
-              style={{
-                color: i === navStack.length - 1 ? "var(--text-primary)" : "var(--accent-primary)",
-                cursor: i === navStack.length - 1 ? "default" : "pointer",
-              }}
+              style={crumbBtnStyle(i === navStack.length - 1)}
             >
               {c.label}
-            </span>
+            </button>
           </span>
         ))}
       </div>
-      <button type="button" disabled={!canBack} onClick={onReload} title="Recargar" style={navBtnStyle}>
+      <button type="button" disabled={!canBack} onClick={onReload} title="Recargar" aria-label="Recargar" style={navBtnStyle}>
         ⟳
       </button>
     </div>
@@ -151,7 +148,7 @@ function FileList({ browser: b, onPlay, nasRoot }: { browser: ReturnType<typeof 
     return <Centered>{b.navStack.length === 0 ? "Selecciona una ubicación" : "Esta carpeta está vacía"}</Centered>;
   }
   return (
-    <div style={{ flex: 1, overflow: "auto" }}>
+    <div role="listbox" aria-label="Archivos" style={{ flex: 1, overflow: "auto" }}>
       {b.items.map((item) => (
         <FileRow key={item.path} item={item} selected={b.selected?.path === item.path} onSelect={b.select} onOpen={b.openItem} onPlay={onPlay} />
       ))}
@@ -172,10 +169,20 @@ function FileRow({
   onOpen: (e: BrowseEntry) => void;
   onPlay: (path: string) => void;
 }) {
+  const activate = () => (item.is_dir ? onOpen(item) : onPlay(item.path));
   return (
     <div
+      role="option"
+      aria-selected={selected}
+      tabIndex={0}
       onClick={() => onSelect(item)}
-      onDoubleClick={() => (item.is_dir ? onOpen(item) : onPlay(item.path))}
+      onDoubleClick={activate}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          onSelect(item);
+          activate();
+        }
+      }}
       style={{
         display: "flex",
         alignItems: "center",
@@ -189,7 +196,7 @@ function FileRow({
         fontSize: 13,
       }}
     >
-      <span style={{ color: item.is_dir ? "var(--text-dim)" : "var(--accent-primary)" }}>{item.is_dir ? "▸" : "▶"}</span>
+      <span aria-hidden="true" style={{ color: item.is_dir ? "var(--text-dim)" : "var(--accent-primary)" }}>{item.is_dir ? "▸" : "▶"}</span>
       <span style={{ flex: 1, color: item.is_dir ? "var(--text-primary)" : "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {item.name}
       </span>
@@ -236,3 +243,14 @@ const navBtnStyle = {
   fontSize: 16,
   cursor: "pointer",
 } as const;
+
+function crumbBtnStyle(isCurrent: boolean) {
+  return {
+    border: "none",
+    background: "transparent",
+    padding: 0,
+    font: "inherit",
+    color: isCurrent ? "var(--text-primary)" : "var(--accent-primary)",
+    cursor: isCurrent ? "default" : "pointer",
+  } as const;
+}

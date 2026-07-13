@@ -17,13 +17,17 @@ export default function EditorTimeline({ entries, selected, onSelect, onRemove, 
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6, overflow: "auto" }}>
+    <div role="listbox" aria-label="Clips en la línea de tiempo" style={{ display: "flex", flexDirection: "column", gap: 6, overflow: "auto" }}>
       {entries.map((entry, i) => {
         const duration = entry.out_point_s - entry.in_point_s;
         return (
           <div
             key={`${entry.source_path}-${i}`}
+            role="option"
+            aria-selected={selected === i}
+            tabIndex={0}
             onClick={() => onSelect(i)}
+            onKeyDown={(e) => { if (e.key === "Enter") onSelect(i); }}
             style={{
               display: "flex",
               alignItems: "center",
@@ -35,14 +39,14 @@ export default function EditorTimeline({ entries, selected, onSelect, onRemove, 
               cursor: "pointer",
             }}
           >
-            <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11, width: 20 }}>{i + 1}</span>
+            <span aria-hidden="true" style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11, width: 20 }}>{i + 1}</span>
             <span style={{ flex: 1, minWidth: 0, color: "var(--text-primary)", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {entry.source_path.split(/[/\\]/).pop()}
             </span>
             <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>{duration.toFixed(1)}s</span>
-            <button type="button" onClick={(e) => { e.stopPropagation(); onMove(i, i - 1); }} disabled={i === 0} style={iconBtnStyle}>↑</button>
-            <button type="button" onClick={(e) => { e.stopPropagation(); onMove(i, i + 1); }} disabled={i === entries.length - 1} style={iconBtnStyle}>↓</button>
-            <button type="button" onClick={(e) => { e.stopPropagation(); onRemove(i); }} style={{ ...iconBtnStyle, color: "var(--accent-record)" }}>✕</button>
+            <button type="button" aria-label="Mover arriba" onClick={(e) => { e.stopPropagation(); onMove(i, i - 1); }} disabled={i === 0} style={iconBtnStyle}>↑</button>
+            <button type="button" aria-label="Mover abajo" onClick={(e) => { e.stopPropagation(); onMove(i, i + 1); }} disabled={i === entries.length - 1} style={iconBtnStyle}>↓</button>
+            <button type="button" aria-label="Quitar clip" onClick={(e) => { e.stopPropagation(); onRemove(i); }} style={{ ...iconBtnStyle, color: "var(--accent-record)" }}>✕</button>
           </div>
         );
       })}

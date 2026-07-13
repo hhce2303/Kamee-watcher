@@ -16,6 +16,7 @@ class FakeSharePort(CloudSharePort):
     def __init__(self) -> None:
         self.folders: set[str] = set()
         self.link_calls: list[str] = []
+        self.web_url_calls: list[str] = []
 
     def ensure_folder(self, folder_path: str) -> bool:
         created = folder_path not in self.folders
@@ -27,6 +28,7 @@ class FakeSharePort(CloudSharePort):
         return f"https://share.example/{folder_path}"
 
     def web_url(self, folder_path: str) -> str:
+        self.web_url_calls.append(folder_path)
         return f"https://drive.example/{folder_path}"
 
 
@@ -68,3 +70,45 @@ class TestEnsureFolderAndLink:
         svc = CloudShareService(Boom())
         with pytest.raises(RuntimeError, match="graph 500"):
             svc.ensure_folder_and_link("a/b")
+
+
+class TestEnsureFolder:
+    """The private-save path — must never mint or fetch a share link."""
+
+    def test_creates_when_absent_and_returns_normalized_path(self) -> None:
+        port = FakeSharePort()
+        svc = CloudShareService(port)
+        result = svc.ensure_folder("SLC/clips-supervisor/2026-06")
+        assert result == "SLC/clips-supervisor/2026-06"
+        assert "SLC/clips-supervisor/2026-06" in port.folders
+
+    def test_idempotent_when_present(self) -> None:
+        svc = CloudShareService(FakeSharePort())
+        svc.ensure_folder("a/b")
+        # Re-running must not raise and must resolve to the same folder.
+        assert svc.ensure_folder("a/b") == "a/b"
+
+    def test_normalizes_messy_path(self) -> None:
+        svc = CloudShareService(FakeSharePort())
+        assert svc.ensure_folder("  SLC \\ clips-supervisor / 2026-06 / ") == "SLC/clips-supervisor/2026-06"
+
+    def test_empty_path_raises(self) -> None:
+        svc = CloudShareService(FakeSharePort())
+        with pytest.raises(ValueError):
+            svc.ensure_folder("   /// ")
+
+    def test_port_error_propagates(self) -> None:
+        class Boom(FakeSharePort):
+            def ensure_folder(self, folder_path: str) -> bool:
+                raise RuntimeError("disk full")
+
+        svc = CloudShareService(Boom())
+        with pytest.raises(RuntimeError, match="disk full"):
+            svc.ensure_folder("a/b")
+
+    def test_never_mints_or_fetches_a_link(self) -> None:
+        port = FakeSharePort()
+        svc = CloudShareService(port)
+        svc.ensure_folder("a/b")
+        assert port.link_calls == []
+        assert port.web_url_calls == []

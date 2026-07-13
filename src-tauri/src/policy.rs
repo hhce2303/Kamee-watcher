@@ -28,3 +28,42 @@ impl AppPolicy {
         self.role() == "operator"
     }
 }
+
+// `AppPolicy` holds no `AppHandle`/Tauri runtime state — it's plain data behind
+// an `RwLock`, so it's testable with `#[test]` directly, unlike `tray.rs`/
+// `commands.rs` which need a real app handle (blocked on the documented
+// `tauri::test::mock_app()` crash — see TODOS.md item 6; not chasing that fix,
+// per the accepted pure-function-extraction pattern this module already follows).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_to_empty_role_and_not_operator() {
+        let policy = AppPolicy::default();
+        assert_eq!(policy.role(), "");
+        assert!(!policy.is_operator());
+    }
+
+    #[test]
+    fn is_operator_true_only_for_operator_role() {
+        let policy = AppPolicy::default();
+        policy.set_role("operator");
+        assert!(policy.is_operator());
+
+        policy.set_role("it");
+        assert!(!policy.is_operator());
+
+        policy.set_role("supervisor");
+        assert!(!policy.is_operator());
+    }
+
+    #[test]
+    fn role_reflects_the_latest_set_role() {
+        let policy = AppPolicy::default();
+        policy.set_role("it");
+        assert_eq!(policy.role(), "it");
+        policy.set_role("operator");
+        assert_eq!(policy.role(), "operator");
+    }
+}

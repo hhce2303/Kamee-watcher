@@ -251,6 +251,30 @@ export interface OneDriveFailed {
 }
 /**
  * This interface was referenced by `DtoSchema`'s JSON-Schema
+ * via the `definition` "OneDriveSaveFailed".
+ */
+export interface OneDriveSaveFailed {
+  event?: "onedrive_save_failed";
+  message: string;
+}
+/**
+ * This interface was referenced by `DtoSchema`'s JSON-Schema
+ * via the `definition` "OneDriveSaveStarted".
+ */
+export interface OneDriveSaveStarted {
+  event?: "onedrive_save_started";
+}
+/**
+ * This interface was referenced by `DtoSchema`'s JSON-Schema
+ * via the `definition` "OneDriveSaved".
+ */
+export interface OneDriveSaved {
+  event?: "onedrive_saved";
+  folder_path: string;
+  output_path: string;
+}
+/**
+ * This interface was referenced by `DtoSchema`'s JSON-Schema
  * via the `definition` "OpenItWsPort".
  */
 export interface OpenItWsPort {}

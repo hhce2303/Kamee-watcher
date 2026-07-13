@@ -102,6 +102,24 @@ class RequestsApi:
             ops.extend(self.list_operators(storage.path))
         return sorted(ops, key=lambda o: o.name.lower())
 
+    def _is_known_operator(self, operator: str, storage: str) -> bool:
+        """Minimal identity sanity check for send_clip_request.
+
+        Confirms the request targets a real operator folder under a real
+        storage share on the NAS — not an arbitrary client-supplied string
+        (today, `operator`/`storage` come straight from the caller's JSON
+        with zero cross-check). This is NOT the full "who can view/request
+        whom" authorization policy — that is a deliberately deferred, tracked
+        gate (see TODOS.md, "who can view whom" for LiveViewPort) that needs
+        an actual permission model. This only rejects requests for
+        operator/storage combinations that don't exist at all.
+        """
+        for s in self.list_storages():
+            if s.name != storage:
+                continue
+            return any(op.name == operator for op in self.list_operators(s.path))
+        return False
+
     # ── Request lifecycle ─────────────────────────────────────────────
 
     def send_clip_request(self, cmd: dto.SendClipRequest) -> bool:
@@ -118,6 +136,13 @@ class RequestsApi:
             req = ClipRequest.from_dict(data)
         except (json.JSONDecodeError, KeyError, TypeError):
             logger.exception("[requests-api] send: invalid request JSON.")
+            return False
+
+        if self._browser is not None and not self._is_known_operator(req.operator, req.storage):
+            logger.warning(
+                "[requests-api] send: rejected — operator '{}' not found under storage '{}'.",
+                req.operator, req.storage,
+            )
             return False
 
         self._requests.save(req)

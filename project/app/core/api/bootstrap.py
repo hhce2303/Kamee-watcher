@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from app.core.api import dto
 from app.core.api.clips_api import ClipsApi
 from app.core.api.delivery_api import DeliveryApi
 from app.core.api.editor_api import EditorApi
@@ -90,6 +91,13 @@ def build_api_layer(
     """
     bus = EventBus()
 
+    editor = EditorApi(
+        event_bus=bus,
+        export_port=export_port,
+        clips_dir=clips_dir,
+        inspector=inspector,
+    )
+
     layer = ApiLayer(
         bus=bus,
         recording=RecordingApi(
@@ -109,12 +117,7 @@ def build_api_layer(
             relaunch_cb=relaunch_cb,
             autorecord_cb=autorecord_cb,
         ),
-        editor=EditorApi(
-            event_bus=bus,
-            export_port=export_port,
-            clips_dir=clips_dir,
-            inspector=inspector,
-        ),
+        editor=editor,
         clips=ClipsApi(
             event_bus=bus,
             clips_dir=clips_dir or Path("."),
@@ -132,6 +135,8 @@ def build_api_layer(
             event_bus=bus,
             cloud_share_service=cloud_share_service,
             onedrive_base_folder=onedrive_base_folder,
+            export_fn=lambda p: editor.export_timeline(dto.ExportTimeline(output_path=p)),
+            is_exporting=lambda: editor.exporting,
         ),
         analytics=analytics_query,
     )

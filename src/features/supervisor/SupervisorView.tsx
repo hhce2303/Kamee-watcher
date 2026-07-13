@@ -6,7 +6,7 @@ import OperatorAvatar from "../../shell/OperatorAvatar";
 import type { ClipRequest, OperatorInfo } from "../../types/dto";
 
 const STATUS_COLOR: Record<string, string> = {
-  pending: "#FBBF24",
+  pending: "var(--status-pending)",
   processing: "var(--accent-primary)",
   done: "var(--accent-ok)",
   declined: "var(--accent-record)",

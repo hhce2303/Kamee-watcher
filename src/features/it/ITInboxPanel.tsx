@@ -2,7 +2,7 @@ import { useInboxRequests } from "../../hooks/useInboxRequests";
 import type { ClipRequest } from "../../types/dto";
 
 const STATUS_COLOR: Record<string, string> = {
-  pending: "#FBBF24",
+  pending: "var(--status-pending)",
   processing: "var(--accent-primary)",
   done: "var(--accent-ok)",
   declined: "var(--accent-record)",
@@ -34,10 +34,10 @@ export default function ITInboxPanel({ onOpen }: ITInboxPanelProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", border: "1px solid var(--border-base)", borderRadius: "var(--r-md)", overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, height: 44, padding: "0 16px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-base)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, height: 44, flexShrink: 0, padding: "0 16px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-base)" }}>
         <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "1.4px" }}>BANDEJA IT</span>
         {pendingCount > 0 && (
-          <span style={{ padding: "1px 6px", borderRadius: 9, background: "rgba(251,191,36,0.2)", color: "#FBBF24", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700 }}>
+          <span style={{ padding: "1px 6px", borderRadius: 9, background: "var(--status-pending-dim)", color: "var(--status-pending)", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700 }}>
             {pendingCount}
           </span>
         )}
@@ -77,11 +77,14 @@ function RequestCard({
 }) {
   return (
     <div
+      role={onOpen ? "button" : undefined}
+      tabIndex={onOpen ? 0 : undefined}
       onClick={() => onOpen?.(request)}
+      onKeyDown={onOpen ? (e) => { if (e.key === "Enter" || e.key === " ") onOpen(request); } : undefined}
       style={{
         borderRadius: "var(--r-sm)",
         background: "var(--bg-surface)",
-        border: `1px solid ${request.status === "pending" ? "rgba(251,191,36,0.3)" : "var(--border-base)"}`,
+        border: `1px solid ${request.status === "pending" ? "color-mix(in srgb, var(--status-pending) 30%, transparent)" : "var(--border-base)"}`,
         padding: 14,
         display: "flex",
         flexDirection: "column",

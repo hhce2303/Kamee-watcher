@@ -127,6 +127,7 @@ class IpcRouter:
             "compute_folder_path": lambda p: {"path": d.compute_folder_path()},
             "ensure_folder_and_link": lambda p: d.ensure_folder_and_link(p.get("folder_path", "")),
             "reset_onedrive":      lambda p: d.reset_onedrive(),
+            "save_reel_privately": lambda p: d.save_reel_privately(p.get("folder_path", "")),
             # ── Analytics (F5) — read-only queries over the event store ──
             "analytics_counts": lambda p: (
                 a.count_by_class(

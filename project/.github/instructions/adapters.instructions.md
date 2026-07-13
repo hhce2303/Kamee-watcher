@@ -42,7 +42,8 @@ proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
   contain business logic, only command dispatch (`cmd → Facade method`) and forwarding bus events
   to the pipe as `{event, ...fields}` envelopes.
 - Every new command needs a matching entry in `src/lib/ipc.ts` and, if it's new domain data, a DTO
-  in `core/api/dto.py` (regenerate `src/types/dto.gen.ts` via `npm run gen:dto`).
+  in `core/api/dto.py` — mirror the shape by hand in `src/types/dto.ts`, then run
+  `npm run gen:dto:check` (also enforced in CI) to catch any drift between them.
 - Never stream video/preview frames through this channel — that goes through the Tauri
   `watcher://` custom protocol (TD-5), never JSON IPC.
 

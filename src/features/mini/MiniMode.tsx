@@ -45,7 +45,11 @@ export default function MiniMode() {
         overflow: "hidden",
       }}
     >
+      {/* role="presentation": this is a window drag handle (like a title bar),
+          not a control itself — the expand/close buttons inside are real,
+          independently focusable buttons. */}
       <div
+        role="presentation"
         onMouseDown={() => void getCurrentWindow().startDragging()}
         style={{ display: "flex", alignItems: "center", height: 28, padding: "0 12px 0 12px", background: "var(--bg-base)", borderBottom: "1px solid var(--border-base)", cursor: "move" }}
       >
@@ -54,8 +58,8 @@ export default function MiniMode() {
           THE WATCHER · MINI
         </span>
         <div style={{ flex: 1 }} />
-        <button type="button" onClick={() => void expandToMain()} style={miniIconBtnStyle}>⤢</button>
-        <button type="button" onClick={() => void getCurrentWindow().hide()} style={miniIconBtnStyle}>✕</button>
+        <button type="button" aria-label="Expandir a ventana principal" onClick={() => void expandToMain()} style={miniIconBtnStyle}>⤢</button>
+        <button type="button" aria-label="Ocultar mini-modo" onClick={() => void getCurrentWindow().hide()} style={miniIconBtnStyle}>✕</button>
       </div>
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12, padding: 14 }}>
