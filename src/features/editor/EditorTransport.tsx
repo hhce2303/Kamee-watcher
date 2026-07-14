@@ -1,10 +1,10 @@
 import { useState } from "react";
 import type { RefObject } from "react";
-import { open } from "@tauri-apps/plugin-shell";
 import { clipUrl } from "../../lib/mediaUrl";
 import { useClipTranscode } from "../../hooks/useClipTranscode";
 import TrimHandles from "./TrimHandles";
 import ZoomOverlay from "../../components/ZoomOverlay";
+import UnsupportedCodecFallback from "../../components/UnsupportedCodecFallback";
 import { useFrameZoom } from "../../hooks/useFrameZoom";
 import type { ClipEntryDTO } from "../../types/dto";
 
@@ -48,23 +48,14 @@ export default function EditorTransport({ entry, onTrim, videoRef }: EditorTrans
 
   if (unsupported && !transcode.outputPath) {
     return (
-      <div className="placeholder-tab" style={{ gap: 12, flex: 1, minHeight: 0 }}>
-        <h2>Formato no soportado</h2>
-        <p>Este clip usa un códec que WebView2 no puede reproducir en este equipo.</p>
-        {transcode.transcoding ? (
-          <p style={{ fontFamily: "var(--font-mono)" }}>Convirtiendo… {(transcode.progress * 100).toFixed(0)}%</p>
-        ) : (
-          <div style={{ display: "flex", gap: 8 }}>
-            <button type="button" onClick={() => transcode.start(entry.source_path)} style={actionBtnStyle}>
-              Convertir a H.264
-            </button>
-            <button type="button" onClick={() => void open(entry.source_path)} style={actionBtnStyle}>
-              Abrir externo
-            </button>
-          </div>
-        )}
-        {transcode.error && <p style={{ color: "var(--accent-record)", fontSize: 12 }}>{transcode.error}</p>}
-      </div>
+      <UnsupportedCodecFallback
+        path={entry.source_path}
+        transcoding={transcode.transcoding}
+        progress={transcode.progress}
+        error={transcode.error}
+        onConvert={() => transcode.start(entry.source_path)}
+        onCancel={() => transcode.cancel(entry.source_path)}
+      />
     );
   }
 
@@ -109,14 +100,3 @@ export default function EditorTransport({ entry, onTrim, videoRef }: EditorTrans
     </div>
   );
 }
-
-const actionBtnStyle = {
-  height: 32,
-  padding: "0 16px",
-  borderRadius: "var(--r-sm)",
-  border: "1px solid var(--border-subtle)",
-  background: "var(--bg-surface)",
-  color: "var(--text-primary)",
-  fontSize: 13,
-  cursor: "pointer",
-} as const;

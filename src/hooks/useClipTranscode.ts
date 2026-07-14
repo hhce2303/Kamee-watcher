@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { transcodeClip } from "../lib/ipc";
+import { cancelTranscode, transcodeClip } from "../lib/ipc";
 import { useBackendEvent } from "./useBackendEvent";
 
 interface UseClipTranscode {
@@ -8,6 +8,7 @@ interface UseClipTranscode {
   outputPath: string | null;
   error: string | null;
   start: (path: string) => void;
+  cancel: (path: string) => void;
 }
 
 /** Drives the HEVC→H.264 on-demand transcode (player fallback) for one path at a time. */
@@ -46,5 +47,12 @@ export function useClipTranscode(): UseClipTranscode {
     void transcodeClip(path).catch((e) => setError(String(e)));
   }, []);
 
-  return { transcoding, progress, outputPath, error, start };
+  // Cancellation resolves via the normal transcode_failed event (backend
+  // reports it as a failure with a "cancelled" message) — no separate state
+  // needed here, the existing error-display path already covers it.
+  const cancel = useCallback((path: string) => {
+    void cancelTranscode(path).catch((e) => setError(String(e)));
+  }, []);
+
+  return { transcoding, progress, outputPath, error, start, cancel };
 }

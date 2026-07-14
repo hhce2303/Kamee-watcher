@@ -1,6 +1,7 @@
 """ClipsApi facade — clip listing, load metadata, and token-resolved browsing."""
 from __future__ import annotations
 
+import threading
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,8 +48,11 @@ class FakeConverter:
         self._fail = fail
         self.calls = []
 
-    def convert(self, source, output=None, on_progress=None):
+    def convert(self, source, output=None, on_progress=None, cancel_event=None):
         self.calls.append(source)
+        self.last_cancel_event = cancel_event
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Conversión cancelada por el usuario.")
         if on_progress:
             on_progress(0.5)
             on_progress(1.0)
@@ -289,3 +293,53 @@ def test_transcode_clip_rejects_concurrent_duplicate(tmp_path) -> None:
     api.transcode_clip(dto.TranscodeClip(path=str(clip)))
 
     assert converter.calls == []
+
+
+def test_transcode_clip_passes_a_cancel_event_to_the_converter(tmp_path) -> None:
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+    converter = FakeConverter()
+    api = _api(tmp_path, converter=converter)
+    _sync(api)
+
+    api.transcode_clip(dto.TranscodeClip(path=str(clip)))
+    api._bus.drain()
+
+    assert isinstance(converter.last_cancel_event, threading.Event)
+    assert not converter.last_cancel_event.is_set()
+
+
+def test_cancel_transcode_sets_the_event_and_converter_reports_failed(tmp_path) -> None:
+    """cancel_transcode() only sets a flag — it's the converter's own poll
+    loop that notices and kills the process; here that's simulated by
+    FakeConverter checking the event itself before "succeeding"."""
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"x")
+    converter = FakeConverter()
+    api = _api(tmp_path, converter=converter)
+
+    # Don't use _sync() here — cancel before the (still-async) transcode
+    # thread gets to check the event, mirroring the real race the feature
+    # exists for. Instead, drive it manually: start, cancel, then run the
+    # "background" work inline once the event is already set.
+    api._run_transcode_async = lambda path, cancel_event: None  # swallow the real thread
+    api.transcode_clip(dto.TranscodeClip(path=str(clip)))
+    assert str(clip) in api._cancel_events
+
+    api.cancel_transcode(str(clip))
+    assert api._cancel_events[str(clip)].is_set()
+
+    failed = []
+    api._bus.subscribe(dto.TranscodeFailed, failed.append)
+    api._do_transcode(str(clip), api._cancel_events[str(clip)])
+    api._bus.drain()
+
+    assert len(failed) == 1
+    assert "ancel" in failed[0].message
+    assert str(clip) not in api._transcoding
+    assert str(clip) not in api._cancel_events
+
+
+def test_cancel_transcode_no_op_when_nothing_running(tmp_path) -> None:
+    api = _api(tmp_path, converter=FakeConverter())
+    api.cancel_transcode(str(tmp_path / "nope.mp4"))  # must not raise

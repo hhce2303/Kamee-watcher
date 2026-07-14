@@ -118,6 +118,7 @@ export const loadClip = (path: string) => ipcSend<LoadedClip>("load_clip", { pat
 export const listDirectory = (path: string) =>
   ipcSend<BrowseListing>("list_directory", { path });
 export const transcodeClip = (path: string) => ipcSend<null>("transcode_clip", { path });
+export const cancelTranscode = (path: string) => ipcSend<null>("cancel_transcode", { path });
 
 // ── Requests (Supervisor ↔ IT) ───────────────────────────────────────
 

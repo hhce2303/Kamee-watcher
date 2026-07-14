@@ -59,6 +59,7 @@ class ClipsApi:
         self._browser = file_browser
         self._converter = mp4_converter
         self._transcoding: set[str] = set()
+        self._cancel_events: dict[str, threading.Event] = {}
 
     # ── Clip listing ──────────────────────────────────────────────────
 
@@ -175,20 +176,36 @@ class ClipsApi:
             self._bus.publish(dto.TranscodeFailed(path=path, message="Archivo no encontrado."))
             return
         self._transcoding.add(path)
+        cancel_event = threading.Event()
+        self._cancel_events[path] = cancel_event
         self._bus.publish(dto.TranscodeStarted(path=path))
-        self._run_transcode_async(path)
+        self._run_transcode_async(path, cancel_event)
 
-    def _run_transcode_async(self, path: str) -> None:
+    def cancel_transcode(self, path: str) -> None:
+        """Request cancellation of the transcode in progress for *path*.
+
+        No-op if none is running (e.g. it already finished) — the converter
+        notices on its next poll and raises, which _do_transcode reports as a
+        normal TranscodeFailed with a "cancelled" message, not a crash.
+        """
+        event = self._cancel_events.get(path)
+        if event is None:
+            logger.warning("[clips-api] no transcode in progress for {} to cancel", path)
+            return
+        event.set()
+
+    def _run_transcode_async(self, path: str, cancel_event: threading.Event) -> None:
         """Overridable in tests so transcode can run inline for determinism."""
         threading.Thread(
-            target=self._do_transcode, args=(path,), daemon=True, name="clip-transcode"
+            target=self._do_transcode, args=(path, cancel_event), daemon=True, name="clip-transcode"
         ).start()
 
-    def _do_transcode(self, path: str) -> None:
+    def _do_transcode(self, path: str, cancel_event: threading.Event) -> None:
         try:
             output = self._converter.convert(
                 Path(path),
                 on_progress=lambda f: self._bus.publish(dto.TranscodeProgress(path=path, fraction=f)),
+                cancel_event=cancel_event,
             )
             self._bus.publish(dto.TranscodeFinished(path=path, output_path=str(output)))
             logger.info("[clips-api] transcode finished: {} → {}", path, output)
@@ -197,3 +214,4 @@ class ClipsApi:
             self._bus.publish(dto.TranscodeFailed(path=path, message=str(exc)))
         finally:
             self._transcoding.discard(path)
+            self._cancel_events.pop(path, None)

@@ -113,6 +113,7 @@ class IpcRouter:
             "load_clip":           lambda p: c.load_clip(dto.LoadClip(path=p["path"])),
             "list_directory":      lambda p: c.list_directory(dto.ListDirectory(path=p["path"])),
             "transcode_clip":      lambda p: c.transcode_clip(dto.TranscodeClip(path=p["path"])),
+            "cancel_transcode":    lambda p: c.cancel_transcode(p["path"]),
             # ── Requests ──
             "list_storages":       lambda p: q.list_storages(),
             "list_operators":      lambda p: q.list_operators(p["storage_path"]),

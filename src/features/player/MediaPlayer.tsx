@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-shell";
 import { clipUrl } from "../../lib/mediaUrl";
 import { useClipTranscode } from "../../hooks/useClipTranscode";
+import UnsupportedCodecFallback from "../../components/UnsupportedCodecFallback";
 
 interface MediaPlayerProps {
   path: string;
@@ -38,23 +38,14 @@ export default function MediaPlayer({ path }: MediaPlayerProps) {
 
   if (unsupported && !transcode.outputPath) {
     return (
-      <div className="placeholder-tab" style={{ gap: 12 }}>
-        <h2>Formato no soportado</h2>
-        <p>Este clip usa un códec que WebView2 no puede reproducir en este equipo.</p>
-        {transcode.transcoding ? (
-          <p style={{ fontFamily: "var(--font-mono)" }}>Convirtiendo… {(transcode.progress * 100).toFixed(0)}%</p>
-        ) : (
-          <div style={{ display: "flex", gap: 8 }}>
-            <button type="button" onClick={() => transcode.start(path)} style={actionBtnStyle}>
-              Convertir a H.264
-            </button>
-            <button type="button" onClick={() => void open(path)} style={actionBtnStyle}>
-              Abrir externo
-            </button>
-          </div>
-        )}
-        {transcode.error && <p style={{ color: "var(--accent-record)", fontSize: 12 }}>{transcode.error}</p>}
-      </div>
+      <UnsupportedCodecFallback
+        path={path}
+        transcoding={transcode.transcoding}
+        progress={transcode.progress}
+        error={transcode.error}
+        onConvert={() => transcode.start(path)}
+        onCancel={() => transcode.cancel(path)}
+      />
     );
   }
 

@@ -12,6 +12,7 @@ import SettingsView from "../settings/SettingsView";
 import ITInboxPanel from "./ITInboxPanel";
 import { ITHealthChips } from "../../shell/HealthChips";
 import PinUnlockPrompt from "../../components/PinUnlockPrompt";
+import CollapsiblePanel from "../../components/CollapsiblePanel";
 import type { ClipRequest } from "../../types/dto";
 
 type View = "cola" | "editor" | "grabacion" | "entregas" | "ajustes";
@@ -103,7 +104,7 @@ export default function ITEditorView() {
 
           {view === "editor" && (
             <div style={{ display: "flex", gap: 14, flex: 1, minHeight: 0 }}>
-              <div style={{ width: "30%", display: "flex", flexDirection: "column", gap: 8 }}>
+              <CollapsiblePanel side="left" label="UBICACIONES" icon="◈" width={340}>
                 <button type="button" onClick={() => void loadFilesIntoReel()} style={loadFilesBtnStyle}>
                   + Cargar videos
                 </button>
@@ -112,13 +113,15 @@ export default function ITEditorView() {
                       caller-supplied duration) — the right call for "pick from NAS/local". */}
                   <ClipBrowser onPlay={(path) => void editor.actions.addFiles([path])} />
                 </div>
-              </div>
+              </CollapsiblePanel>
               <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
                 <VideoEditorView defaultOutputPath="reel.mp4" />
               </div>
-              <div style={{ width: 280, flexShrink: 0, overflowY: "auto" }}>
-                <PrivateSavePanel />
-              </div>
+              <CollapsiblePanel side="right" label="ONEDRIVE" icon="☁" width={280}>
+                <div style={{ overflowY: "auto" }}>
+                  <PrivateSavePanel />
+                </div>
+              </CollapsiblePanel>
             </div>
           )}
 
