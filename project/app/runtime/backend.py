@@ -268,7 +268,15 @@ def build_recording_backend(
 
     def _on_auto_event(event: AnalyticEvent) -> None:
         nonlocal _last_auto_build_at
-        backend.event_store.add(event)
+        # Guarded: this runs synchronously inside LiveInferenceService's
+        # "live-inference" thread (via AutoEventService._on_detections). ADR-0019
+        # guarded the build step (schedule_clip_build) but an exception here —
+        # e.g. a SQLite hiccup — used to propagate straight back into that thread
+        # and kill it permanently, silently ending all future auto-events/clips.
+        try:
+            backend.event_store.add(event)
+        except Exception:
+            logger.exception("[auto-event] failed to persist event {} — continuing.", event.event_id)
 
         with _auto_build_lock:
             if (
@@ -281,7 +289,11 @@ def build_recording_backend(
                 return
             _last_auto_build_at = event.start
 
-        ctx = backend.clip_builder.snapshot_event(event.start)
+        try:
+            ctx = backend.clip_builder.snapshot_event(event.start)
+        except Exception:
+            logger.exception("[auto-event] snapshot_event failed for {} — clip not built.", event.event_id)
+            return
 
         def _persist_auto_clip(_ctx: EventContext, output: Path) -> None:
             updated = event.model_copy(update={"clip_path": output})
@@ -350,5 +362,7 @@ def build_recording_backend(
     backend.health_service = RecordingHealthService(
         recording_service=backend.recording_service,
         poll_interval_seconds=30.0,
+        background_services={"live-inference": backend.live_service},
+        hang_grace_seconds=settings.event_pipeline_hang_grace_seconds,
     )
     return backend

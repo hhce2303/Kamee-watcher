@@ -104,7 +104,7 @@ export default function ITEditorView() {
 
           {view === "editor" && (
             <div style={{ display: "flex", gap: 14, flex: 1, minHeight: 0 }}>
-              <CollapsiblePanel side="left" label="UBICACIONES" icon="◈" width={340}>
+              <CollapsiblePanel side="left" label="UBICACIONES" icon="◈" width={580}>
                 <button type="button" onClick={() => void loadFilesIntoReel()} style={loadFilesBtnStyle}>
                   + Cargar videos
                 </button>
@@ -117,7 +117,7 @@ export default function ITEditorView() {
               <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
                 <VideoEditorView defaultOutputPath="reel.mp4" />
               </div>
-              <CollapsiblePanel side="right" label="ONEDRIVE" icon="☁" width={280}>
+              <CollapsiblePanel side="right" label="ONEDRIVE" icon="☁" width={320}>
                 <div style={{ overflowY: "auto" }}>
                   <PrivateSavePanel />
                 </div>

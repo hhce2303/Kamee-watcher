@@ -495,7 +495,9 @@ def _wire_request_system(
     return req_server, req_client
 
 
-def _wire_failure_callbacks(backend: RecordingBackend, api: ApiLayer) -> None:
+def _wire_failure_callbacks(
+    backend: RecordingBackend, api: ApiLayer, *, is_operator_daemon: bool = False
+) -> None:
     """Wire recording/clip failure + health transitions to the facade (shared, C2).
 
     Previously only wired on the QML path — a headless daemon/sidecar had no
@@ -510,7 +512,29 @@ def _wire_failure_callbacks(backend: RecordingBackend, api: ApiLayer) -> None:
             on_degraded=api.recording.on_recording_degraded,
             on_recovered=api.recording.on_recording_recovered,
         )
+        if is_operator_daemon:
+            backend.health_service._on_hang_timeout = _make_hang_timeout_cb()  # noqa: SLF001
         backend.health_service.start()
+
+
+def _make_hang_timeout_cb() -> Callable[[list], None]:
+    """Operator-only: a background service (e.g. live-inference) has been dead
+    past its grace period. Deliberately hard-exit with a non-zero code so the
+    Scheduled Task watchdog (RestartOnFailure) revives a clean process within
+    ~1 minute — reusing that already-proven mechanism instead of trying to
+    self-heal a possibly-corrupted in-process state. Never wired for IT/
+    Supervisor (sidecar, no Scheduled Task to bring it back).
+    """
+
+    def _on_hang_timeout(dead_services: list) -> None:
+        logger.critical(
+            "[runtime] background service(s) {} hung past grace period — "
+            "exiting so the operator restart watchdog can recover.",
+            ", ".join(dead_services),
+        )
+        os._exit(1)
+
+    return _on_hang_timeout
 
 
 def _make_restart_recording_cb(
@@ -693,7 +717,7 @@ def main() -> None:
     )
 
     req_server, req_client = _wire_request_system(user_config, settings, api)
-    _wire_failure_callbacks(backend, api)
+    _wire_failure_callbacks(backend, api, is_operator_daemon=(user_config.role == OPERATOR))
 
     api.settings.set_restart_encoder_cb(_make_restart_recording_cb(recording_service, settings))
     api.settings.set_autorecord_cb(_make_autorecord_cb(recording_service))

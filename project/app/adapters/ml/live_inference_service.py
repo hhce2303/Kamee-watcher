@@ -93,6 +93,10 @@ class LiveInferenceService(DetectorPort):
     def subscribe(self, callback: Callable[[Sequence[Detection]], None]) -> None:
         self._subs.append(callback)
 
+    def is_alive(self) -> bool:
+        """Liveness check for RecordingHealthService (background_services)."""
+        return self._thread is not None and self._thread.is_alive()
+
     def analyze(self, frame: bytes, meta: dict[str, Any]) -> Sequence[Detection]:
         """Passthrough for direct calls (e.g. BatchClipAnalyzer)."""
         return self._detector.analyze(frame, meta)
@@ -104,7 +108,19 @@ class LiveInferenceService(DetectorPort):
             for monitor_idx, preview_path in list(self._preview_paths.items()):
                 if self._stop.is_set():
                     return
-                self._process_frame(monitor_idx, preview_path)
+                try:
+                    self._process_frame(monitor_idx, preview_path)
+                except Exception as exc:  # noqa: BLE001
+                    # Last-resort guard: this thread has no supervisor (unlike
+                    # RecorderSupervisor/RecordingHealthService/DiskSpaceMonitor,
+                    # which all guard their own loops). An unguarded exception here
+                    # used to kill "live-inference" permanently and silently —
+                    # zero further auto-events/clips for the rest of the process's
+                    # life, with raw FFmpeg capture/retention unaffected and
+                    # nothing left to notice. See ADR-0019 follow-up.
+                    logger.exception(
+                        "[live] m{} unexpected error in _process_frame: {}", monitor_idx, exc
+                    )
 
     def _process_frame(self, monitor_idx: int, preview_path: Path) -> None:
         try:
@@ -119,7 +135,11 @@ class LiveInferenceService(DetectorPort):
         mf = self._motion_filters.setdefault(
             monitor_idx, MotionFilter(self._motion_threshold)
         )
-        score = mf.update(gray)
+        try:
+            score = mf.update(gray)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[live] m{} motion filter error: {}", monitor_idx, exc)
+            return
         if not mf.has_motion(score):
             logger.debug("[live] m{} motion={:.4f} → gate closed", monitor_idx, score)
             return
@@ -146,14 +166,26 @@ class LiveInferenceService(DetectorPort):
         ]
 
         if self._tracker and detections:
-            detections = self._tracker.update(detections)
+            try:
+                detections = self._tracker.update(detections)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[live] m{} tracker error: {}", monitor_idx, exc)
+                return
 
         if detections:
             logger.debug(
                 "[live] m{} motion={:.3f} → {} detections", monitor_idx, score, len(detections)
             )
             for cb in list(self._subs):
-                cb(detections)
+                # Per-callback guard: one broken subscriber (e.g. AutoEventService's
+                # persistence path) must not stop notification of the others, and
+                # must not propagate back into _loop() and kill this thread.
+                try:
+                    cb(detections)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception(
+                        "[live] m{} subscriber callback raised: {}", monitor_idx, exc
+                    )
 
 
 def _jpeg_to_gray(jpeg_bytes: bytes, width: int = 160, height: int = 90) -> Optional[np.ndarray]:

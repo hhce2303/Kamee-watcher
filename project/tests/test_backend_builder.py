@@ -57,6 +57,7 @@ def _recording_settings(tmp_path):
         event_post_seconds=120,
         event_cooldown_seconds=30,
         event_auto_build_min_interval_seconds=240,
+        event_pipeline_hang_grace_seconds=300,
         clip_retry_delay_seconds=30,
         onnx_model_path="",
         inference_device="cpu",

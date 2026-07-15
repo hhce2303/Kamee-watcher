@@ -377,6 +377,114 @@ class TestLiveInferenceService:
         svc.stop()
         svc.stop()  # should not raise
 
+    def test_is_alive_reflects_thread_lifecycle(self):
+        det = MockDetectorAdapter()
+        svc = LiveInferenceService(detector=det, preview_paths={}, poll_interval=99.0)
+        assert svc.is_alive() is False
+        svc.start()
+        assert svc.is_alive() is True
+        svc.stop()
+        assert svc.is_alive() is False
+
+
+class TestLiveInferenceServiceResilience:
+    """A1: an exception anywhere in the detect chain must never kill the
+    "live-inference" daemon thread — before this hardening it did, silently
+    ending all further auto-events/clips for the rest of the process's life
+    while raw capture kept running normally (see the operator outage report)."""
+
+    def _write_jpeg(self, path: Path, color: tuple[int, int, int]) -> None:
+        from PIL import Image
+        import io
+        img = Image.new("RGB", (4, 4), color=color)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        path.write_bytes(buf.getvalue())
+
+    def test_process_frame_survives_motion_filter_exception(
+        self, tmp_path: Path, monkeypatch
+    ):
+        try:
+            self._write_jpeg(tmp_path / "preview.jpg", (0, 0, 0))
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        preview = tmp_path / "preview.jpg"
+
+        det = MockDetectorAdapter()
+        svc = LiveInferenceService(detector=det, preview_paths={0: preview}, poll_interval=99.0)
+
+        def _boom(self, gray):
+            raise RuntimeError("corrupt frame")
+
+        monkeypatch.setattr(MotionFilter, "update", _boom)
+        svc._process_frame(0, preview)  # must not raise
+
+    def test_process_frame_survives_tracker_exception(self, tmp_path: Path):
+        preview = tmp_path / "preview.jpg"
+        try:
+            self._write_jpeg(preview, (0, 0, 0))
+        except ImportError:
+            pytest.skip("Pillow not installed")
+
+        det = MockDetectorAdapter()
+        tracker = MagicMock()
+        tracker.update.side_effect = RuntimeError("tracker exploded")
+        svc = LiveInferenceService(
+            detector=det, preview_paths={0: preview}, motion_threshold=0.01,
+            tracker=tracker, poll_interval=99.0,
+        )
+        svc._process_frame(0, preview)  # primes the motion filter, no motion yet
+        self._write_jpeg(preview, (255, 255, 255))
+        svc._process_frame(0, preview)  # triggers motion → detector → tracker (raises)
+        # Must not raise, and must be ready to process the next frame too.
+        svc._process_frame(0, preview)
+
+    def test_subscriber_exception_does_not_block_other_subscribers(self, tmp_path: Path):
+        preview = tmp_path / "preview.jpg"
+        try:
+            self._write_jpeg(preview, (0, 0, 0))
+        except ImportError:
+            pytest.skip("Pillow not installed")
+
+        det = MockDetectorAdapter()
+        svc = LiveInferenceService(
+            detector=det, preview_paths={0: preview}, motion_threshold=0.01, poll_interval=99.0,
+        )
+        good_calls: List = []
+
+        def _bad_subscriber(_dets):
+            raise RuntimeError("subscriber bug")
+
+        svc.subscribe(_bad_subscriber)
+        svc.subscribe(good_calls.append)
+
+        svc._process_frame(0, preview)  # primes motion filter
+        self._write_jpeg(preview, (255, 255, 255))
+        svc._process_frame(0, preview)  # motion → detections → both subscribers called
+
+        assert len(good_calls) == 1  # second subscriber still ran despite the first raising
+
+    def test_loop_thread_survives_process_frame_exception(self, monkeypatch):
+        det = MockDetectorAdapter()
+        svc = LiveInferenceService(
+            detector=det, preview_paths={0: Path("does-not-matter.jpg")}, poll_interval=0.05,
+        )
+        calls = {"n": 0}
+
+        def _flaky(self, monitor_idx, preview_path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(LiveInferenceService, "_process_frame", _flaky)
+        svc.start()
+        time.sleep(0.3)
+        still_alive = svc.is_alive()
+        svc.stop()
+
+        assert still_alive, "the daemon thread must survive an unguarded exception"
+        assert calls["n"] >= 2, "polling must continue after the exception"
+
 
 # ── SqliteAnalyticsAdapter ────────────────────────────────────────────────────
 

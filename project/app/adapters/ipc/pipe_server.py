@@ -138,6 +138,13 @@ class NamedPipeIpcServer:
                 self._serve_client(handle)
             except pywintypes.error as exc:
                 logger.debug("[ipc] connection ended: {}", exc)
+            except Exception:  # noqa: BLE001
+                # Anything outside pywintypes.error (e.g. a bug in FrameDecoder/
+                # encode_frame or an uncaught router error) used to propagate out
+                # of this loop entirely and silently kill the "ipc-pipe" accept
+                # thread for good — no more CreateNamedPipe, "SIN CONEXIÓN"
+                # forever until a full process restart. Log and keep accepting.
+                logger.exception("[ipc] unexpected error serving client — reconnecting.")
             finally:
                 self._handle = None
                 self._drain_event_queue()  # discard events buffered for a gone client
