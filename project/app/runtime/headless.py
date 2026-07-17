@@ -63,6 +63,16 @@ class HeadlessRuntime:
     def request_stop(self) -> None:
         self._stop.set()
 
+    def stop_requested(self) -> bool:
+        """True once a shutdown has been requested (signal, stdin, or role change).
+
+        Lets a caller starting slow background work (e.g. main()'s recording
+        startup thread, which runs concurrently with this runtime's signal
+        handlers/pipe once serve_daemon()/serve_sidecar() is entered) bail out
+        early instead of finishing a start-up after teardown already ran.
+        """
+        return self._stop.is_set()
+
     # ── Core loop ─────────────────────────────────────────────────────
 
     def _serve(self) -> int:

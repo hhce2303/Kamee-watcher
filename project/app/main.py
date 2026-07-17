@@ -6,6 +6,7 @@ sys.path.append(str(pathlib.Path(__file__).parent.parent))
 
 import atexit
 import os
+import threading
 import time
 from typing import Callable, List, Optional
 
@@ -306,28 +307,44 @@ def _detect_monitors(user_config: UserConfig) -> tuple[MonitorDetectionService, 
     return detection_service, all_monitors
 
 
+def _build_preview_server(
+    user_config: UserConfig, settings: Settings
+) -> Optional[MjpegPreviewServerAdapter]:
+    """Construct (but do not start) the operator-only MJPEG preview server.
+
+    Split from :func:`_start_recording_services` so the API layer can be wired
+    against this instance before the (potentially slow) recording startup runs
+    — see that function's docstring for why the two are no longer combined.
+    """
+    if user_config.role != OPERATOR:
+        return None
+    return MjpegPreviewServerAdapter(settings)
+
+
 def _start_recording_services(
     backend: RecordingBackend,
     user_config: UserConfig,
     detection_service: MonitorDetectionService,
     settings: Settings,
-) -> Optional[MjpegPreviewServerAdapter]:
+    preview_server: Optional[MjpegPreviewServerAdapter],
+) -> None:
     """Start the operator preview server (if applicable) and every backend service.
 
-    Returns the preview server instance (None on non-operator roles).
+    Runs on a background thread (see main()) rather than inline during startup:
+    ``recording_service.start()`` spawns FFmpeg per monitor, and building that
+    command synchronously probes the capture backend (ddagrab availability),
+    the zero-copy filter chain, and the hardware encoder — each a subprocess
+    call with an 8-12s timeout (recorder_adapter.py / encoder_selector.py), none
+    cached across monitors. On a machine with a flaky/asleep GPU driver those
+    probes can each burn their full timeout, so this used to block the named
+    pipe from ever binding — the Tauri UI would sit "connecting..." for up to
+    a minute or more with zero feedback, indistinguishable from a real hang.
     """
     # Preview JPEGs are written by the recorder itself (backend.preview_paths,
     # segments/m{idx}/preview.jpg) and served to the UI via the watcher://
     # custom protocol (src-tauri) — the frontend polls at ~2 fps (TD-5: never
     # over JSON invoke). Nothing in this process needs to forward the paths.
-
-    # ── Operator-only localhost MJPEG preview server ───────────────────
-    # Starts an HTTP server on 127.0.0.1:{PREVIEW_HTTP_PORT} so any browser
-    # on the operator PC can open a live MJPEG feed without Tauri.
-    # Non-recording roles (Supervisor/IT/unconfigured) never start this.
-    preview_server = None
-    if user_config.role == OPERATOR:
-        preview_server = MjpegPreviewServerAdapter(settings)
+    if preview_server is not None:
         preview_server.start()
 
     # ── Start recording ───────────────────────────────────────────────
@@ -340,11 +357,6 @@ def _start_recording_services(
         recording_service.start()
     elif recording_service is not None:
         logger.info("Auto-record off for this role/config — buffer not started at launch.")
-    # health_service.start() is deferred until after set_callbacks() below —
-    # api (whose methods those callbacks call) doesn't exist yet here, and
-    # starting the poll loop before callbacks are wired risks silently
-    # dropping a degraded→recovered transition that completes entirely
-    # within that window.
     if backend.disk_monitor is not None:
         backend.disk_monitor.start()
     detection_service.start()
@@ -359,8 +371,10 @@ def _start_recording_services(
         # configured by default) — revisit detector lifecycle ownership before
         # shipping ONNX_MODEL_PATH to a fleet.
         backend.batch_analyzer.start()
-
-    return preview_server
+    # health_service.start() happens last, back in the caller (main()'s
+    # background thread) — it must fire only once recording has actually been
+    # attempted, so a first poll never reports a false "degraded" against a
+    # recorder that simply hasn't been asked to start yet.
 
 
 def _recover_startup_clips(backend: RecordingBackend, settings: Settings) -> None:
@@ -498,10 +512,15 @@ def _wire_request_system(
 def _wire_failure_callbacks(
     backend: RecordingBackend, api: ApiLayer, *, is_operator_daemon: bool = False
 ) -> None:
-    """Wire recording/clip failure + health transitions to the facade (shared, C2).
+    """Wire recording/clip failure + health callbacks to the facade (shared, C2).
 
     Previously only wired on the QML path — a headless daemon/sidecar had no
     way to surface a recorder crash or a failed clip build to the UI.
+
+    Does NOT call ``health_service.start()`` — the poll loop is started by the
+    caller (main()'s background recording-startup thread) only after recording
+    has actually been attempted, so its first poll can't report a false
+    "degraded" against a recorder that simply hasn't started yet.
     """
     for w in backend.workers:
         w.set_on_recording_failed(api.recording.on_recording_failed)
@@ -514,7 +533,6 @@ def _wire_failure_callbacks(
         )
         if is_operator_daemon:
             backend.health_service._on_hang_timeout = _make_hang_timeout_cb()  # noqa: SLF001
-        backend.health_service.start()
 
 
 def _make_hang_timeout_cb() -> Callable[[list], None]:
@@ -695,8 +713,10 @@ def main() -> None:
     )
     recording_service = backend.recording_service
 
-    preview_server = _start_recording_services(backend, user_config, detection_service, settings)
-    _recover_startup_clips(backend, settings)
+    # Constructed now (cheap) but not started — starting it (and the rest of
+    # the recording stack) is deferred to a background thread below so it
+    # cannot block the IPC pipe from binding.
+    preview_server = _build_preview_server(user_config, settings)
 
     inspector, player_service, editor_export, cloud_share_service = _build_player_editor_services(
         segment_compiler, settings
@@ -742,6 +762,33 @@ def main() -> None:
     # Role change (first-run wizard or an IT-initiated change) stops this
     # runtime cleanly (same teardown as SIGTERM), then main() relaunches.
     api.settings.set_relaunch_cb(runtime.request_stop)
+
+    def _start_recording_async() -> None:
+        """Run the recording stack's startup off the main thread.
+
+        See _start_recording_services' docstring: this is where the FFmpeg
+        capture-backend/encoder probes (each up to 8-12s, uncached across
+        monitors) used to block — synchronously, before the IPC pipe even
+        existed. Running them here lets the pipe bind immediately so the UI
+        connects right away instead of appearing hung during a slow probe.
+        """
+        if runtime.stop_requested():
+            return  # shutdown raced startup — nothing to do
+        try:
+            _start_recording_services(
+                backend, user_config, detection_service, settings, preview_server
+            )
+            _recover_startup_clips(backend, settings)
+        except Exception:
+            logger.exception("[startup] recording stack failed to start.")
+            return
+        if backend.health_service is not None and not runtime.stop_requested():
+            backend.health_service.start()
+
+    threading.Thread(
+        target=_start_recording_async, daemon=True, name="recording-startup"
+    ).start()
+
     logger.info("Headless '{}' mode — serving IPC contract.", mode)
     code = runtime.serve_daemon() if mode == DAEMON else runtime.serve_sidecar()
     if _relaunch_flag["requested"]:
