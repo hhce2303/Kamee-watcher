@@ -23,16 +23,21 @@ jobs:
           cache-dependency-path: project/requirements.txt
       - name: Install Python dependencies
         run: pip install -r project/requirements.txt
+      - name: Install FFmpeg
+        # Required — most of the FFmpeg-adapter suite (encoder_selector,
+        # clip_inspector_adapter, segment_compiler, mp4_converter_adapter,
+        # event_clip_ffmpeg_adapters, the hourly-recording-builder boundary/purge
+        # tests) exercises the real ffmpeg/ffprobe binaries, not a mock — without
+        # this step they hard-fail with FileNotFoundError, or cascade into
+        # file-existence/content-diff assertion failures once the missing binary
+        # means no output ever gets produced. Only the Track-R2 parity tests
+        # (test_parity_*.py) self-skip when ffmpeg/ffprobe aren't resolvable —
+        # that self-skip does NOT cover the rest of the suite.
+        run: choco install ffmpeg -y
       - name: Run pytest
         env:
           PYTHONPATH: project
         run: python -m pytest project/tests -q
-        # Note: the native Rust segment engine (project/native/watcher_segments)
-        # is NOT built here — app.adapters.native falls back to FFmpeg when the
-        # compiled engine is absent (ENGINE_READY gate), so the suite already
-        # exercises the fallback path cleanly. Track-R2 parity tests
-        # (test_parity_*.py) self-skip when ffmpeg/ffprobe aren't resolvable —
-        # no ffmpeg install step needed for a green run here.
 
   frontend:
     name: Frontend (lint, types, tests, DTO sync)
