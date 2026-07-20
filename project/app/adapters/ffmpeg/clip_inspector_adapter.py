@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import List, Optional
 
 from loguru import logger
 
-from app.adapters.ffmpeg.ffmpeg_path import resolve_ffprobe
+from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg, resolve_ffprobe
 from app.core.player.models import ClipInfo, StreamInfo
 from app.core.ports.clip_inspector_port import ClipInspectorPort
+
+_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 
 
 class FFprobeClipInspectorAdapter(ClipInspectorPort):
@@ -24,6 +27,22 @@ class FFprobeClipInspectorAdapter(ClipInspectorPort):
 
         fmt = probe.get("format", {})
         duration = float(fmt.get("duration", 0.0) or 0.0)
+        if duration <= 0:
+            # Some containers never got a duration written into their header —
+            # e.g. a live-muxed Matroska recording interrupted before it could
+            # finalize (no SegmentInfo/Duration, no Cues — "File ended
+            # prematurely" from ffmpeg). The only way to know how much is
+            # actually playable is to demux the whole file (stream-copy, no
+            # decode — ~80s for a 13h/15GB dump in testing, effectively
+            # instant for a normal-length clip) and read the last packet
+            # timestamp ffmpeg reports as it goes.
+            duration = self._scan_duration(path)
+            if duration > 0:
+                logger.info(
+                    "FFprobeInspector: {} had no header duration — scanned {:.1f}s instead.",
+                    path.name,
+                    duration,
+                )
         size_bytes = path.stat().st_size
 
         logger.debug(
@@ -68,6 +87,32 @@ class FFprobeClipInspectorAdapter(ClipInspectorPort):
             raise RuntimeError(f"ffprobe failed (rc={result.returncode}): {stderr}")
 
         return json.loads(result.stdout)
+
+    def _scan_duration(self, path: Path) -> float:
+        """Demux the whole file (no decode) and return the last packet
+        timestamp ffmpeg reports — the fallback for containers with no
+        duration in their header. Best-effort: any failure (including a
+        timeout on a pathologically large/slow file) yields 0.0, same as the
+        caller's existing "un-probeable" skip — never raises."""
+        cmd = [resolve_ffmpeg(), "-i", str(path), "-c", "copy", "-f", "null", "-"]
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=600,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            logger.warning("FFprobeInspector: duration scan failed for {}: {}", path, exc)
+            return 0.0
+
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        matches = _TIME_RE.findall(stderr)
+        if not matches:
+            return 0.0
+        h, m, s = matches[-1]
+        return int(h) * 3600 + int(m) * 60 + float(s)
 
     def _parse_streams(self, raw_streams: list) -> List[StreamInfo]:
         streams: List[StreamInfo] = []

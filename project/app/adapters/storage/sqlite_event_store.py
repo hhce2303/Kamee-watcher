@@ -18,6 +18,7 @@ from typing import List, Optional
 from loguru import logger
 
 from app.core.analytics.models import AnalyticEvent
+from app.core.ports.audit_port import AuditPort
 from app.core.ports.event_store_port import EventStorePort
 
 _SCHEMA = """
@@ -31,11 +32,22 @@ CREATE TABLE IF NOT EXISTS events (
     payload_json  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_ts);
+
+-- Audit trail for security-sensitive commands (ADR-0011): start/stop/unlock/setRole.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        REAL NOT NULL,
+    command   TEXT NOT NULL,
+    origin    TEXT NOT NULL,
+    detail    TEXT NOT NULL DEFAULT '',
+    success   INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
 """
 
 
-class SqliteEventStoreAdapter(EventStorePort):
-    """Persist/query analytic events in a SQLite database."""
+class SqliteEventStoreAdapter(EventStorePort, AuditPort):
+    """Persist/query analytic events and the security audit log in SQLite."""
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = Path(db_path)
@@ -106,6 +118,44 @@ class SqliteEventStoreAdapter(EventStorePort):
         if row is None:
             return None
         return AnalyticEvent.model_validate_json(row["payload_json"])
+
+    # ── AuditPort ─────────────────────────────────────────────────────
+
+    def record(
+        self,
+        command: str,
+        origin: str,
+        timestamp: datetime,
+        detail: str = "",
+        success: bool = True,
+    ) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO audit_log (ts, command, origin, detail, success) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (timestamp.timestamp(), command, origin, detail, 1 if success else 0),
+            )
+
+    def audit_entries(self, command: Optional[str] = None) -> List[dict]:
+        """Return audit rows newest-first (optionally filtered by command)."""
+        sql = "SELECT ts, command, origin, detail, success FROM audit_log"
+        params: list[object] = []
+        if command is not None:
+            sql += " WHERE command = ?"
+            params.append(command)
+        sql += " ORDER BY ts DESC"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "ts": r["ts"],
+                "command": r["command"],
+                "origin": r["origin"],
+                "detail": r["detail"],
+                "success": bool(r["success"]),
+            }
+            for r in rows
+        ]
 
     def close(self) -> None:
         with self._lock:

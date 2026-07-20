@@ -1,7 +1,19 @@
-# The Watcher launcher — DEV MODE
-# Siempre arranca desde cero: borra user_config y requests para que
-# aparezca el wizard de selección de rol en cada ejecución.
-# Usage: .\run.ps1
+# The Watcher launcher - DEV MODE
+# QML/PySide6 are gone (F3): the UI is Tauri + React, connecting to the Python
+# backend over the named pipe. This script starts the backend headless (role-
+# aware: --daemon for Operator, --sidecar otherwise) and, by default, the
+# Tauri dev shell alongside it.
+#
+# Usage:
+#   .\run.ps1                  # Tauri dev: role-aware Python backend + `npm run tauri dev` (default)
+#   .\run.ps1 -Mode daemon     # headless Operator daemon only, no UI (ADR-0010)
+#   .\run.ps1 -Mode sidecar    # headless IT/Supervisor sidecar only, no UI (stdin shutdown)
+#   .\run.ps1 -ResetRole       # wipe the persisted role first, so the wizard reappears
+param(
+    [ValidateSet("tauri", "daemon", "sidecar")]
+    [string]$Mode = "tauri",
+    [switch]$ResetRole
+)
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -24,44 +36,64 @@ if (-not (Test-Path "$venvDir\Scripts\Activate.ps1")) {
 
 & "$venvDir\Scripts\Activate.ps1"
 
-# ── Reset de estado: forzar flujo de instalación/rol ─────────────────────────
+# -- Reset opcional: forzar el wizard de rol (-ResetRole) ----------------------
 $configDir = "$env:LOCALAPPDATA\The Watcher"
 $userConfig = "$configDir\user_config.json"
 $requestsDir = "$configDir\requests"
 
-if (Test-Path $userConfig) {
-    Remove-Item -Force $userConfig
-    Write-Host "[reset] user_config.json eliminado → el wizard de rol aparecerá al iniciar."
+if ($ResetRole) {
+    if (Test-Path $userConfig) {
+        Remove-Item -Force $userConfig
+        Write-Host "[reset] user_config.json eliminado -> el wizard de rol aparecera al iniciar." -ForegroundColor Cyan
+    }
+    if (Test-Path $requestsDir) {
+        Remove-Item -Recurse -Force $requestsDir
+        Write-Host "[reset] Carpeta requests/ eliminada." -ForegroundColor Cyan
+    }
 }
 
-if (Test-Path $requestsDir) {
-    Remove-Item -Recurse -Force $requestsDir
-    Write-Host "[reset] Carpeta requests/ eliminada."
+# -- Rol persistido (para decidir --daemon vs --sidecar) -----------------------
+function Get-PersistedRole {
+    if (Test-Path $userConfig) {
+        try {
+            $cfg = Get-Content $userConfig -Raw | ConvertFrom-Json
+            if ($cfg.role) { return $cfg.role }
+        } catch {
+            Write-Warning "No se pudo leer user_config.json - asumiendo rol sin configurar."
+        }
+    }
+    return ""
 }
 
-Write-Host "[reset] Listo. Arrancando desde la seleccion de rol..." -ForegroundColor Cyan
+$role = Get-PersistedRole
+$backendFlag = if ($role -eq "operator") { "--daemon" } else { "--sidecar" }
 
-# ── Qt Quick Controls style ───────────────────────────────────────────────────
-# Force the "Basic" style so custom `background` properties on TextField,
-# ComboBox, etc. are respected.  The default native Windows style ignores them
-# and emits QML warnings.
-$env:QT_QUICK_CONTROLS_STYLE = "Basic"
-
-# ── Qt plugin paths ───────────────────────────────────────────────────────────
-$pyside6PluginsPath = & "$venvDir\Scripts\python.exe" -c `
-    "import PySide6, pathlib; print(pathlib.Path(PySide6.__file__).parent / 'plugins')" `
-    2>$null
-if ($pyside6PluginsPath) {
-    $env:QT_PLUGIN_PATH = $pyside6PluginsPath
-    Write-Host "Qt plugin path: $env:QT_PLUGIN_PATH"
+# -- Launch by mode (ADR-0010; C4 - the backend picks --daemon/--sidecar) -----
+switch ($Mode) {
+    "daemon"  { Write-Host "Launching headless DAEMON (Operator topology)..." -ForegroundColor Cyan
+                python -m app.main --daemon }
+    "sidecar" { Write-Host "Launching headless SIDECAR (IT/Supervisor topology)..." -ForegroundColor Cyan
+                python -m app.main --sidecar }
+    "tauri"   {
+        Write-Host "Launching TAURI dev mode: Python backend ($backendFlag, role='$role') + Tauri shell..." -ForegroundColor Cyan
+        # Build artefacts must live outside OneDrive (TD: sync-lock permissions).
+        $env:CARGO_TARGET_DIR = "$env:LOCALAPPDATA\the-watcher\target"
+        # Start the Python backend in the background; it binds the named pipe.
+        $backend = Start-Process python -ArgumentList "-m", "app.main", $backendFlag `
+            -PassThru -NoNewWindow
+        Write-Host "  Python backend PID: $($backend.Id)" -ForegroundColor DarkGray
+        # Give the backend a moment to bind the pipe before Tauri connects.
+        Start-Sleep -Seconds 1
+        # Launch Tauri dev (blocks; Ctrl-C will kill both).
+        try {
+            Set-Location (Split-Path -Parent $scriptDir)
+            npm run tauri -- dev
+        } finally {
+            Write-Host "Stopping Python backend..." -ForegroundColor Yellow
+            # send shutdown via stdin before kill (TD-3: process.kill() misses PyInstaller children).
+            if (-not $backend.HasExited) {
+                $backend.Kill()
+            }
+        }
+    }
 }
-
-$pyside6QmlPath = & "$venvDir\Scripts\python.exe" -c `
-    "import PySide6, pathlib; print(pathlib.Path(PySide6.__file__).parent / 'qml')" `
-    2>$null
-if ($pyside6QmlPath) {
-    $env:QML2_IMPORT_PATH = $pyside6QmlPath
-    Write-Host "QML import path: $env:QML2_IMPORT_PATH"
-}
-
-python -m app.main

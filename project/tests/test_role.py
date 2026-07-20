@@ -1,7 +1,7 @@
 """Tests for the role system — enforce_role(), SettingsBridge PIN validation."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 # ── enforce_role ──────────────────────────────────────────────────────────────
@@ -18,6 +18,14 @@ class TestEnforceRole:
         m.is_enabled = enabled_at_start
         return m
 
+    def _fake_task(self, registered: bool = True, raises: bool = False):
+        m = MagicMock()
+        if raises:
+            m.ensure_registered.side_effect = RuntimeError("GPO blocked")
+        else:
+            m.ensure_registered.return_value = registered
+        return m
+
     def test_operator_forces_autorecord(self):
         from app.core.role import enforce_role
         cfg = self._make_config(autorecord=False, role="operator")
@@ -25,12 +33,37 @@ class TestEnforceRole:
         enforce_role("operator", cfg, auto)
         assert cfg.autorecord is True
 
-    def test_operator_calls_set_autostart(self):
+    def test_operator_registers_task_and_drops_runkey(self):
+        # New contract: with a working scheduled-task module, the task becomes
+        # the sole launcher and the Run key is removed (set_autostart(False)).
         from app.core.role import enforce_role
         cfg = self._make_config(role="operator")
         auto = self._fake_autostart()
-        enforce_role("operator", cfg, auto)
-        auto.set_autostart.assert_called_once_with(True)
+        task = self._fake_task(registered=True)
+        status = enforce_role("operator", cfg, auto, task)
+        assert status == "task"
+        task.ensure_registered.assert_called_once_with()
+        auto.set_autostart.assert_called_once_with(False)
+
+    def test_operator_falls_back_to_runkey_when_task_fails(self):
+        # Task registration fails (e.g. corporate GPO) → keep the Run key so
+        # login autostart still works; report the degraded "runkey" status.
+        from app.core.role import enforce_role
+        cfg = self._make_config(role="operator")
+        auto = self._fake_autostart()
+        task = self._fake_task(raises=True)
+        status = enforce_role("operator", cfg, auto, task)
+        assert status == "runkey"
+        auto.set_autostart.assert_called_once_with(True, launch_args=["--daemon"])
+
+    def test_operator_falls_back_to_runkey_without_task_module(self):
+        # No scheduled-task module injected → Run-key fallback (legacy contract).
+        from app.core.role import enforce_role
+        cfg = self._make_config(role="operator")
+        auto = self._fake_autostart()
+        status = enforce_role("operator", cfg, auto)
+        assert status == "runkey"
+        auto.set_autostart.assert_called_once_with(True, launch_args=["--daemon"])
 
     def test_supervisor_forces_autorecord_off(self):
         from app.core.role import enforce_role
@@ -127,139 +160,3 @@ class TestRecordingGates:
         assert should_autorecord_on_launch("supervisor", True) is False
         assert should_autorecord_on_launch("", True) is False
 
-
-# ── SettingsBridge PIN ────────────────────────────────────────────────────────
-
-class TestSettingsBridgePin:
-    """SettingsBridge.unlockIT validates against settings.it_pin."""
-
-    def _make_bridge(self, it_pin="4321"):
-        from unittest.mock import MagicMock
-        from app.infrastructure.config import Settings
-
-        # Build a minimal Settings-like object without loading .env
-        settings = MagicMock(spec=Settings)
-        settings.it_pin = it_pin
-        settings.clips_dir = "/tmp/clips"
-        settings.video_codec = "h264"
-        settings.capture_framerate = 30
-        settings.output_width = 1920
-        settings.output_height = 1080
-        settings.segment_duration = 300
-        settings.retention_hours = 8
-        settings.event_pre_seconds = 120
-        settings.event_post_seconds = 120
-        settings.event_cooldown_seconds = 30
-
-        port = MagicMock()
-        from app.core.ports.user_config_port import UserConfig
-        port.load.return_value = UserConfig(role="operator")
-
-        from app.adapters.ui.settings_bridge import SettingsBridge
-        bridge = SettingsBridge.__new__(SettingsBridge)
-        bridge._port = port
-        bridge._settings = settings
-        bridge._clips_dir = "/tmp/clips"
-        bridge._driver = "auto"
-        bridge._codec = "h264"
-        bridge._autorecord = True
-        bridge._role = "operator"
-        bridge._it_unlocked = False
-        bridge._restart_state = "idle"
-        bridge._restart_cb = None
-        bridge._relaunch_cb = None
-        bridge._autorecord_cb = None
-        return bridge
-
-    def test_correct_pin_unlocks(self):
-        bridge = self._make_bridge(it_pin="4321")
-        with patch.object(bridge, "roleChanged"):
-            result = bridge.unlockIT("4321")
-        assert result is True
-        assert bridge._it_unlocked is True
-
-    def test_wrong_pin_does_not_unlock(self):
-        bridge = self._make_bridge(it_pin="4321")
-        result = bridge.unlockIT("0000")
-        assert result is False
-        assert bridge._it_unlocked is False
-
-    def test_set_role_blocked_without_unlock(self):
-        bridge = self._make_bridge()
-        bridge._role = "operator"
-        bridge._it_unlocked = False
-        with patch.object(bridge, "roleChanged"):
-            bridge.setRole("it")
-        assert bridge._role == "operator"   # unchanged
-
-    def test_set_role_allowed_when_unlocked(self):
-        bridge = self._make_bridge()
-        bridge._role = "operator"
-        bridge._it_unlocked = True
-        with patch.object(bridge, "roleChanged"), \
-             patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setRole("it")
-        assert bridge._role == "it"
-
-    def test_set_role_allowed_for_first_run(self):
-        bridge = self._make_bridge()
-        bridge._role = ""
-        bridge._it_unlocked = False
-        with patch.object(bridge, "roleChanged"), \
-             patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setRole("supervisor")
-        assert bridge._role == "supervisor"
-
-    def test_set_role_rejects_invalid(self):
-        bridge = self._make_bridge()
-        bridge._role = "it"
-        with patch.object(bridge, "roleChanged"), \
-             patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setRole("admin")
-        assert bridge._role == "it"
-
-    def test_set_role_initializes_autorecord_default(self):
-        # First-run IT → autorecord off (opt-in); first-run operator → on.
-        for role, expected in (("it", False), ("operator", True), ("supervisor", False)):
-            bridge = self._make_bridge()
-            bridge._role = ""
-            bridge._autorecord = True
-            with patch.object(bridge, "roleChanged"), \
-                 patch.object(bridge, "systemChanged"), \
-                 patch.object(bridge, "_persist"):
-                bridge.setRole(role)
-            assert bridge._role == role
-            assert bridge._autorecord is expected
-
-    def test_set_role_triggers_relaunch(self):
-        bridge = self._make_bridge()
-        bridge._role = ""
-        bridge._relaunch_cb = MagicMock()
-        with patch.object(bridge, "roleChanged"), \
-             patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setRole("operator")
-        bridge._relaunch_cb.assert_called_once_with()
-
-    def test_set_role_no_relaunch_when_unchanged(self):
-        bridge = self._make_bridge()
-        bridge._role = "operator"
-        bridge._relaunch_cb = MagicMock()
-        with patch.object(bridge, "roleChanged"), \
-             patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setRole("operator")
-        bridge._relaunch_cb.assert_not_called()
-
-    def test_set_autorecord_invokes_callback(self):
-        bridge = self._make_bridge()
-        bridge._autorecord = False
-        bridge._autorecord_cb = MagicMock()
-        with patch.object(bridge, "systemChanged"), \
-             patch.object(bridge, "_persist"):
-            bridge.setAutorecord(True)
-        assert bridge._autorecord is True
-        bridge._autorecord_cb.assert_called_once_with(True)

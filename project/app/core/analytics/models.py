@@ -38,7 +38,8 @@ class Detection(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     bbox: BoundingBox
     frame_time: datetime  # absolute wall-clock of the detected frame
-    track_id: Optional[int] = None  # stable id across frames (tracker output)
+    track_id: Optional[int] = None       # stable id across frames (tracker output)
+    monitor_index: Optional[int] = None  # set by LiveInferenceService for zone lookup
 
 
 class AnalyticEvent(BaseModel):

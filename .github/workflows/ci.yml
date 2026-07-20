@@ -1,0 +1,96 @@
+name: CI
+
+# Every job runs on windows-latest, not a Linux/macOS matrix: this app is
+# Windows-only by design (pywin32 named pipes, DXGI/ddagrab capture, WebView2
+# HEVC playback — see CLAUDE.md's non-negotiables). project/requirements.txt
+# pulls in pywin32/pywin32-ctypes/pefile, which have no Linux wheels, so even
+# the frontend job (which only needs Python for the DTO codegen script) has
+# to run here rather than on ubuntu-latest.
+on:
+  push:
+  pull_request:
+
+jobs:
+  python-tests:
+    name: Python tests (pytest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: project/requirements.txt
+      - name: Install Python dependencies
+        run: pip install -r project/requirements.txt
+      - name: Install FFmpeg
+        # Required — most of the FFmpeg-adapter suite (encoder_selector,
+        # clip_inspector_adapter, segment_compiler, mp4_converter_adapter,
+        # event_clip_ffmpeg_adapters, the hourly-recording-builder boundary/purge
+        # tests) exercises the real ffmpeg/ffprobe binaries, not a mock — without
+        # this step they hard-fail with FileNotFoundError, or cascade into
+        # file-existence/content-diff assertion failures once the missing binary
+        # means no output ever gets produced. Only the Track-R2 parity tests
+        # (test_parity_*.py) self-skip when ffmpeg/ffprobe aren't resolvable —
+        # that self-skip does NOT cover the rest of the suite.
+        run: choco install ffmpeg -y
+      - name: Run pytest
+        env:
+          PYTHONPATH: project
+        run: python -m pytest project/tests -q
+
+  frontend:
+    name: Frontend (lint, types, tests, DTO sync)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: project/requirements.txt
+      - name: Install Python dependencies (for gen:dto)
+        run: pip install -r project/requirements.txt
+      - name: Install Node dependencies
+        run: npm ci
+      - name: ESLint
+        run: npm run lint
+      - name: Type-check
+        run: npx tsc --noEmit -p tsconfig.json
+      - name: Vitest
+        run: npm run test
+      - name: DTO drift check (dto.py vs dto.gen.ts)
+        # Catches exactly the failure mode from the repo audit: dto.ts gets
+        # hand-updated but dto.gen.ts (the generated snapshot) doesn't. This
+        # does NOT check dto.ts itself for drift (nothing auto-verifies the
+        # hand-maintained file against dto.py) — only that the generated
+        # snapshot matches what's committed.
+        run: npm run gen:dto:check
+
+  rust-tests:
+    name: Rust tests (cargo test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+        # Scope note: commands.rs/tray.rs/policy.rs's Tauri-AppHandle-dependent
+        # code has no test coverage here — tauri::test::mock_app() crashes on
+        # this toolchain (STATUS_ENTRYPOINT_NOT_FOUND, see TODOS.md item 6) and
+        # that rabbit hole is deliberately not being chased. What IS tested:
+        # ipc.rs + media_protocol.rs's pure protocol-logic functions, and
+        # policy.rs's AppPolicy (no AppHandle dependency at all).
+
+  # Deliberately no Tauri installer build step yet: `tauri build` has never
+  # been run successfully on this project (packaging was explicitly deferred
+  # past F3 — see CLAUDE.md and the "despliegue de pruebas" milestone). Adding
+  # it here now would just turn CI red on an unrelated, already-tracked gap.

@@ -14,12 +14,15 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from loguru import logger
 
 from app.core.analytics.models import AnalyticEvent, Detection
 from app.core.ports.detector_port import DetectorPort
+
+if TYPE_CHECKING:
+    from app.core.analytics.zone import Zone
 
 
 class AutoEventService:
@@ -32,12 +35,14 @@ class AutoEventService:
         confidence_threshold: float = 0.6,
         cooldown_seconds: int = 30,
         clock: Optional[Callable[[], datetime]] = None,
+        zones: Optional[List["Zone"]] = None,
     ) -> None:
         self._detector = detector
         self._on_event = on_event
         self._threshold = confidence_threshold
         self._cooldown = cooldown_seconds
         self._clock = clock or (lambda: datetime.now(tz=timezone.utc))
+        self._zones: List["Zone"] = zones or []
         self._last_at: Optional[datetime] = None
         self._lock = threading.Lock()
 
@@ -65,6 +70,14 @@ class AutoEventService:
                     return False
             self._last_at = now
 
+        # Zone lookup: requires monitor_index on Detection (set by LiveInferenceService).
+        zone: Optional[str] = None
+        if self._zones and best.monitor_index is not None:
+            for z in self._zones:
+                if z.monitor_index == best.monitor_index and z.contains_center(best.bbox):
+                    zone = z.name
+                    break
+
         event = AnalyticEvent(
             event_id=now.strftime("%Y%m%d%H%M%S%f"),
             type=best.class_name,
@@ -73,9 +86,11 @@ class AutoEventService:
             end=now,
             confidence=best.confidence,
             track_id=best.track_id,
+            monitor_index=best.monitor_index,
+            zone=zone,
             detections=tuple(detections),
         )
-        logger.info("[auto-event] {} (conf={:.2f}) → event {}",
-                    best.class_name, best.confidence, event.event_id)
+        logger.info("[auto-event] {} (conf={:.2f}) zone={} → event {}",
+                    best.class_name, best.confidence, zone, event.event_id)
         self._on_event(event)
         return True

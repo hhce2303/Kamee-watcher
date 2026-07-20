@@ -1,7 +1,9 @@
 ---
 description: >
   Use when creating or modifying adapters in app/adapters/. Covers FFmpeg subprocess
-  patterns, PySide6 widget rules, port-adapter contracts, and file naming for this project.
+  patterns, named-pipe IPC router conventions, port-adapter contracts, and file naming for this
+  project. PySide6/QML adapters (`app/adapters/ui/`) were removed in F3 (2026-07-06) — the UI is
+  now Tauri 2.0 + React, talking to the backend only via `app/adapters/ipc/router.py`.
 applyTo: "app/adapters/**/*.py"
 ---
 
@@ -9,13 +11,12 @@ applyTo: "app/adapters/**/*.py"
 
 ## Port Contract
 
-Every adapter must inherit exactly one port ABC from `app/core/ports/` and implement all abstract methods.  
-Do NOT inherit from `QObject` and an ABC at the same time — Qt metaclass and `ABCMeta` conflict.
+Every adapter must inherit exactly one port ABC from `app/core/ports/` and implement all abstract methods.
 
 ```python
 from app.core.ports.recorder_port import RecorderPort
 
-class FFmpegRecorderAdapter(RecorderPort):  # one port, no QObject base
+class FFmpegRecorderAdapter(RecorderPort):
     ...
 ```
 
@@ -35,13 +36,26 @@ cmd = ["ffmpeg", "-f", "ddagrab", f"output_idx={monitor.dxgi_index}", ...]
 proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
 ```
 
-## PySide6 UI Adapters (`adapters/ui/`)
+## Named-pipe IPC Adapter (`adapters/ipc/`)
 
-- UI adapters are **not** domain objects. They must not contain business logic.
-- For video rendering: use `QVideoWidget` as the output surface, not `QGraphicsVideoItem`.
-- Call `QCoreApplication.addLibraryPath(pyside6_plugins_path)` before creating any `QMediaPlayer`.
-- Widget signals carry only primitive types or stdlib types — never domain model objects.
-- Use the `tw-*` design tokens (see `pencil/pencil-new.pen`) for any new color choices.
+- `router.py` is the only bridge between the frontend and `core/api`'s Facade — it must not
+  contain business logic, only command dispatch (`cmd → Facade method`) and forwarding bus events
+  to the pipe as `{event, ...fields}` envelopes.
+- Every new command needs a matching entry in `src/lib/ipc.ts` and, if it's new domain data, a DTO
+  in `core/api/dto.py` — mirror the shape by hand in `src/types/dto.ts`, then run
+  `npm run gen:dto:check` (also enforced in CI) to catch any drift between them.
+- Never stream video/preview frames through this channel — that goes through the Tauri
+  `watcher://` custom protocol (TD-5), never JSON IPC.
+
+## WebSocket Adapters (`adapters/ws/`)
+
+- `request_server.py` / `request_client.py` implement the IT↔Supervisor clip-request protocol
+  over `websockets` (asyncio-on-thread, Qt-free) — wire format is unchanged JSON text
+  (`clip_request`/`ack`/`status_update`), so IT and Supervisor machines stay interoperable across
+  rollout.
+- `stop()` must schedule `loop.stop()` via `call_soon_threadsafe` **after** the shutdown future
+  resolves, never from inside the shutdown coroutine itself — doing so races the future's
+  resolution callback and causes a silent 5s hang on every teardown.
 
 ## Monitor Adapter (`adapters/monitor/`)
 
@@ -54,6 +68,6 @@ proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
 | What | Where |
 |------|-------|
 | New FFmpeg-based adapter | `app/adapters/ffmpeg/{name}_adapter.py` |
-| New UI widget | `app/adapters/ui/{widget_name}.py` |
+| New IPC command | `app/adapters/ipc/router.py` (dispatch) + `core/api/{name}_api.py` (Facade) |
 | New port ABC | `app/core/ports/{domain}_port.py` |
 | Wiring new adapter | `app/main.py` only |

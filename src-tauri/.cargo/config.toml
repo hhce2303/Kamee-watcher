@@ -1,0 +1,5 @@
+[build]
+# Keep Rust artefacts outside OneDrive — avoids sync-lock permission errors
+# when the project lives in a OneDrive-synced folder.
+# run.ps1 -Mode tauri sets CARGO_TARGET_DIR automatically.
+# Manual build: $env:CARGO_TARGET_DIR = "$env:LOCALAPPDATA\the-watcher\target"
